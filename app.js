@@ -14,10 +14,10 @@ const CATS = [
   { k: 'car', name: '車', desc: 'A・B・D棟で1秒以下', color: '#d1d5db' },
 ];
 const WD = '日月火水木金土';
-const TABS = ['時系列', '滞在の内訳', 'ヒートマップ', '日別トレンド', '回遊', 'ノード間移動', '機器チェック'];
+const TABS = ['日別トレンド', '時系列', '滞在の内訳', 'ヒートマップ', '回遊', 'ノード間移動', '機器チェック'];
 
 let D, NDAY, HOL, EV, NODES, DAY, BASE, AREAS;
-const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'day', dt: 'all', showOther: false, skip1: true, dayChart: 'line' };
+const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'people', dt: 'all', showOther: false, skip1: true, dayChart: 'line' };
 const $ = id => document.getElementById(id);
 const tip = $('tip');
 
@@ -478,6 +478,6 @@ function render() {
   renderControls(); renderKpis();
   const p = $('pane'); p.innerHTML = ''; hideTip();
   if (!selNodes().length) { p.innerHTML = '<div class="empty">拠点を1つ以上選んでください</div>'; return; }
-  [tabSeries, tabStay, tabHeat, tabDaily, tabRoam, tabMoves, tabCheck][S.tab](p);
+  [tabDaily, tabSeries, tabStay, tabHeat, tabRoam, tabMoves, tabCheck][S.tab](p);
 }
 boot();
