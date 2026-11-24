@@ -16,6 +16,7 @@
 <main>
   <div class="card">
     <div class="row"><span class="lbl">📅 期間</span><span id="quick" class="row"></span><input type="date" id="from"> 〜 <input type="date" id="to"></div>
+    <div class="row"><span class="lbl">🗺 エリア</span><span id="areas" class="row"></span></div>
     <div class="row"><span class="lbl">📍 拠点</span><span id="chips" class="row"></span></div>
   </div>
   <div class="kpis" id="kpis"></div>
@@ -28,6 +29,7 @@
     <ul>
       <li>水上ビル商店街の各拠点に置いたBLEセンサーが拾った<b>スマートフォンの台数</b>です。人数そのものではありません（スマホを持っていない人は数えられず、端末の識別子が途中で変わると別の人として数えます）。</li>
       <li>その日・その拠点で最初に見えてから最後に見えるまでの長さで分けています：<b>素通り</b> 1分未満／<b>立ち寄り</b> 1〜15分／<b>長居</b> 15〜90分／<b>スタッフ</b> 90分以上／<b>車</b> A・B・D棟で1秒以下。</li>
+      <li><b>エリア</b>：商店街＝A〜D棟、その他＝ひとなる図書館・大手ビル西など。エリアを選ぶと、来た人と回遊はそのエリアの拠点だけで数え直します。</li>
       <li><b>回遊</b>はその日2か所以上で見えた人。そのうち、どこにも1分以上いなかった人を<b>通り抜け</b>、どこかで1分以上いた人を<b>寄り道回遊</b>としています。</li>
       <li>データは毎朝6時ごろに前日までの分を集計し、12時・18時ごろに当日の分を足しています。当日の分は途中経過です。端末を見分ける情報はこのページには含まれていません。</li>
     </ul>

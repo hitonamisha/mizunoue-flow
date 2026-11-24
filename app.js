@@ -16,7 +16,7 @@ const CATS = [
 const WD = '日月火水木金土';
 const TABS = ['時系列', '滞在の内訳', 'ヒートマップ', '日別トレンド', '回遊', 'ノード間移動', '機器チェック'];
 
-let D, NDAY, HOL, EV, NODES, DAY, BASE;
+let D, NDAY, HOL, EV, NODES, DAY, BASE, AREAS;
 const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'day', dt: 'all', showOther: false, skip1: true };
 const $ = id => document.getElementById(id);
 const tip = $('tip');
@@ -50,6 +50,7 @@ async function boot() {
   HOL = new Set(D.holidays || []);
   EV = D.events || {};
   NODES = D.nodes;
+  AREAS = {}; Object.entries(D.areas || {}).forEach(([a, ks]) => { const k2 = ks.filter(k => NODES.includes(k)); if (k2.length) AREAS[a] = k2; });
   NODES.forEach((k, i) => { if (!COLORS[k]) COLORS[k] = EXTRA[i % EXTRA.length]; });
   NODES.forEach(k => S.sel.add(k));
   for (const k of NODES) while (D.slot30[k].length < NDAY * 48) D.slot30[k].push(null);
@@ -106,6 +107,18 @@ function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.
 function head(p, title, controls) { const h = el('div', 'head'); h.appendChild(el('b', null, title)); const c = el('span', 'row'); (controls || []).forEach(x => c.appendChild(x)); h.appendChild(c); p.appendChild(h); }
 function lbl(t) { return el('span', 'lbl', t); }
 function dtButtons() { return [['all', '全部'], ['on', '平日'], ['off', '土日祝']].map(([k, l]) => btn(l, S.dt === k, () => { S.dt = k; render(); })); }
+// エリア：拠点の選択がどれかのエリアとぴったり同じならそのエリア、そうでなければ全体
+function curArea() {
+  for (const [a, ks] of Object.entries(AREAS)) if (ks.length === S.sel.size && ks.every(k => S.sel.has(k))) return a;
+  return 'all';
+}
+function areaLabel() { const a = curArea(); return a === 'all' ? (S.sel.size === NODES.length ? '全拠点' : '全拠点（拠点を個別に選んだときも全体で計算）') : a; }
+// 回遊の行（[日, 到着時, 来た人, 2か所以上, 3か所以上, 通り抜け, 寄り道回遊]）。エリアを選んでいればエリア内で数えたもの
+function roamRows() {
+  const a = curArea();
+  if (a === 'all' || !D.roamHrArea || !D.roamHrArea.length) return D.roamHr;
+  return D.roamHrArea.filter(r => r[1] === a).map(r => [r[0]].concat(r.slice(2)));
+}
 function selNodes() { return NODES.filter(k => S.sel.has(k)); }
 function rangeDays() { const a = []; for (let d = S.from; d <= S.to; d++) a.push(d); return a; }
 
@@ -118,6 +131,10 @@ function renderControls() {
   q.appendChild(btn('今日（' + D.generated.slice(11, 16) + 'まで）', S.from === NDAY - 1 && S.to === NDAY - 1, () => { S.from = S.to = NDAY - 1; render(); }));
   for (const id of ['from', 'to']) { $(id).min = dayStr(0); $(id).max = dayStr(NDAY - 1); }
   $('from').value = dayStr(S.from); $('to').value = dayStr(S.to);
+  const ar = $('areas'); ar.innerHTML = '';
+  const ca = curArea();
+  ar.appendChild(btn('すべて', S.sel.size === NODES.length, () => { S.sel = new Set(NODES); render(); }));
+  for (const [a, ks] of Object.entries(AREAS)) ar.appendChild(btn(a + '（' + ks.join('・').replace(/棟・/g, '・') + '）', ca === a, () => { S.sel = new Set(ks); render(); }));
   const c = $('chips'); c.innerHTML = '';
   for (const k of NODES) {
     const b = el('button', 'chip' + (S.sel.has(k) ? '' : ' off'), k); b.style.background = COLORS[k];
@@ -131,14 +148,14 @@ function renderControls() {
 function renderKpis() {
   const days = rangeDays(), nodes = selNodes();
   let v = 0, rs = 0;
-  for (const r of D.roamHr) if (r[0] >= S.from && r[0] <= S.to) { v += r[2]; rs += r[6]; }
+  for (const r of roamRows()) if (r[0] >= S.from && r[0] <= S.to) { v += r[2]; rs += r[6]; }
   let pass = 0, stay = 0;
   for (const k of nodes) for (const d of days) { pass += D.catDay[k].pass[d]; stay += D.catDay[k].stop[d] + D.catDay[k].long[d]; }
   let cov = 0; for (const k of nodes) for (const d of days) cov += DAY[k][d].cov;
   const cards = [
-    ['来た人（1日平均）', fmt(v / days.length), '商店街全体・車とスタッフを除く'],
+    ['来た人（1日平均）', fmt(v / days.length), areaLabel() + '・車とスタッフを除く'],
     ['立ち寄り率', pct(stay, pass + stay) + '%', '選んだ拠点で1分以上いた人の割合'],
-    ['寄り道回遊率', pct(rs, v) + '%', '2か所以上で見えて、どこかで1分以上いた人'],
+    ['寄り道回遊率', pct(rs, v) + '%', areaLabel() + 'の中で2か所以上・どこかで1分以上'],
     ['稼働率', nodes.length ? Math.round(cov / (nodes.length * days.length * 48) * 100) + '%' : '-', '30分枠のうちデータが届いた割合'],
   ];
   $('kpis').innerHTML = cards.map(([t, val, s]) => `<div class="kpi"><div class="t">${t}</div><div class="v">${val}</div><div class="s">${s}</div></div>`).join('');
@@ -315,9 +332,10 @@ function tabDaily(p) {
 // ---------------------------------------------------------------- 回遊
 function tabRoam(p) {
   head(p, '何時に来た人が回遊するか（到着時間別）', dtButtons());
-  p.appendChild(el('p', 'note', 'その日最初に見えた時間ごとに、2か所以上で見えた人の割合。<b>通り抜け</b>＝どこにも1分以上いなかった人、<b>寄り道回遊</b>＝どこかで1分以上いた人。車・スタッフは除く。商店街全体の数字なので拠点の選択は効かない。'));
+  p.appendChild(el('p', 'note', 'その日最初に見えた時間ごとに、2か所以上で見えた人の割合。<b>通り抜け</b>＝どこにも1分以上いなかった人、<b>寄り道回遊</b>＝どこかで1分以上いた人。車・スタッフは除く。上の「エリア」で商店街（A〜D棟）などを選ぶと、そのエリアの中だけで数え直す（今：<b>' + areaLabel() + '</b>）。'));
   const hr = [...Array(24)].map(() => [0, 0, 0, 0, 0, 0]);
-  for (const r of D.roamHr) if (r[0] >= S.from && r[0] <= S.to && inDt(r[0])) for (let j = 2; j < 7; j++) hr[r[1]][j - 2] += r[j];
+  const RR = roamRows();
+  for (const r of RR) if (r[0] >= S.from && r[0] <= S.to && inDt(r[0])) for (let j = 2; j < 7; j++) hr[r[1]][j - 2] += r[j];
   const box = el('div'); p.appendChild(box);
   const rs = hr.map(x => pct(x[4], x[0])), wt = hr.map(x => pct(x[3], x[0]));
   stackBars(box, { cats: [...Array(24).keys()].map(String), stacks: [{ name: '寄り道回遊', color: '#059669', vals: rs }, { name: '通り抜け', color: '#cbd5e1', vals: wt }], yfmt: v => v + '%',
@@ -331,9 +349,9 @@ function tabRoam(p) {
   // 日ごと
   let sec = el('div', 'sec'); p.appendChild(sec);
   head(sec, '日ごとの回遊率');
-  sec.appendChild(el('p', 'note', '車・スタッフを除いた来た人のうちの割合。' + BAND_NOTE));
+  sec.appendChild(el('p', 'note', '車・スタッフを除いた来た人（' + areaLabel() + '）のうちの割合。' + BAND_NOTE));
   const days = rangeDays(), byDay = {};
-  for (const r of D.roamHr) { if (!byDay[r[0]]) byDay[r[0]] = [0, 0, 0, 0, 0]; for (let j = 2; j < 7; j++) byDay[r[0]][j - 2] += r[j]; }
+  for (const r of RR) { if (!byDay[r[0]]) byDay[r[0]] = [0, 0, 0, 0, 0]; for (let j = 2; j < 7; j++) byDay[r[0]][j - 2] += r[j]; }
   const g = f => days.map(d => { const x = byDay[d]; return x && x[0] >= 500 ? f(x) : null; });
   const b2 = el('div'); sec.appendChild(b2);
   lineChart(b2, { n: days.length, series: [{ name: '2か所以上', color: '#2563eb', vals: g(x => x[1] / x[0] * 100) }, { name: '寄り道回遊', color: '#059669', vals: g(x => x[4] / x[0] * 100) }, { name: '3か所以上', color: '#7c3aed', vals: g(x => x[2] / x[0] * 100) }],
