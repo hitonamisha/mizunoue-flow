@@ -49,7 +49,10 @@ async function boot() {
   NDAY = D.days;
   HOL = new Set(D.holidays || []);
   EV = D.events || {};
-  NODES = D.nodes;
+  // 並びは西から東：大手ビル → A〜D棟 → ひとなる図書館 → そのほか
+  const ORDER = ['大手ビル', 'A棟', 'B棟', 'C棟', 'D棟', 'ひとなる図書館'];
+  const rank = k => { const i = ORDER.findIndex(o => k.startsWith(o)); return i < 0 ? 99 : i; };
+  NODES = D.nodes.slice().sort((a, b) => rank(a) - rank(b) || a.localeCompare(b, 'ja'));
   AREAS = {}; Object.entries(D.areas || {}).forEach(([a, ks]) => { const k2 = ks.filter(k => NODES.includes(k)); if (k2.length) AREAS[a] = k2; });
   NODES.forEach((k, i) => { if (!COLORS[k]) COLORS[k] = EXTRA[i % EXTRA.length]; });
   NODES.forEach(k => S.sel.add(k));
