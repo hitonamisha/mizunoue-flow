@@ -257,7 +257,7 @@ function tabSeries(p) {
   for (const k of selNodes()) {
     let v = D.slot30[k].slice(a, b);
     if (S.smooth) {
-      const half = S.win, pre = [0]; for (const x of v) pre.push(pre[pre.length - 1] + (x || 0));
+      const half = S.win * 2, pre = [0]; for (const x of v) pre.push(pre[pre.length - 1] + (x || 0));
       v = v.map((_, i) => { const lo = Math.max(0, i - half), hi = Math.min(n, i + half + 1); return (pre[hi] - pre[lo]) / (hi - lo); });
     }
     if (S.unit !== 'count') {
