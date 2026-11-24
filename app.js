@@ -57,7 +57,7 @@ async function boot() {
   const m = location.hash.match(/^#tab(\d)$/); if (m && +m[1] < TABS.length) S.tab = +m[1];
   S.to = Math.max(0, NDAY - 2);              // 既定は昨日まで
   S.from = Math.max(0, S.to - 6);
-  $('updated').textContent = '最終更新: ' + D.generated.replace('T', ' ').slice(0, 16) + '（毎朝6時ごろ更新）／ データ: ' + md(0) + '〜' + md(NDAY - 1);
+  $('updated').textContent = '最終更新: ' + D.generated.replace('T', ' ').slice(0, 16) + '（毎朝6時・12時・18時ごろ更新）／ データ: ' + md(0) + '〜' + md(NDAY - 1);
   $('from').onchange = e => { S.from = clamp(dayIdx(e.target.value), 0, S.to); render(); };
   $('to').onchange = e => { S.to = clamp(dayIdx(e.target.value), S.from, NDAY - 1); render(); };
   let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 150); });
@@ -115,7 +115,7 @@ function renderControls() {
   for (const [l, n] of [['昨日', 1], ['7日', 7], ['30日', 30], ['全期間', NDAY - 1]]) {
     q.appendChild(btn(l, S.to === last && S.to - S.from + 1 === n, () => { S.to = last; S.from = Math.max(0, last - n + 1); render(); }));
   }
-  q.appendChild(btn('今日（途中）', S.from === NDAY - 1 && S.to === NDAY - 1, () => { S.from = S.to = NDAY - 1; render(); }));
+  q.appendChild(btn('今日（' + D.generated.slice(11, 16) + 'まで）', S.from === NDAY - 1 && S.to === NDAY - 1, () => { S.from = S.to = NDAY - 1; render(); }));
   for (const id of ['from', 'to']) { $(id).min = dayStr(0); $(id).max = dayStr(NDAY - 1); }
   $('from').value = dayStr(S.from); $('to').value = dayStr(S.to);
   const c = $('chips'); c.innerHTML = '';
