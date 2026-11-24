@@ -17,7 +17,7 @@ const WD = '日月火水木金土';
 const TABS = ['時系列', '滞在の内訳', 'ヒートマップ', '日別トレンド', '回遊', 'ノード間移動', '機器チェック'];
 
 let D, NDAY, HOL, EV, NODES, DAY, BASE, AREAS;
-const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'day', dt: 'all', showOther: false, skip1: true };
+const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'day', dt: 'all', showOther: false, skip1: true, dayChart: 'line' };
 const $ = id => document.getElementById(id);
 const tip = $('tip');
 
@@ -206,18 +206,27 @@ function lineChart(box, { n, series, label, hoverLabel, yfmt, bands }) {
   cv.onmouseleave = hideTip;
 }
 
-function stackBars(box, { cats, stacks, yfmt, tipFn, H }) {
+function stackBars(box, { cats, stacks, yfmt, tipFn, H, line, bands }) {
   H = H || 320; const { cv, g, W } = setupCanvas(box, H);
   const L = 52, R = 12, T = 10, B = 40, pw = W - L - R, ph = H - T - B, n = cats.length;
   let ymax = 0; for (let i = 0; i < n; i++) { const s = stacks.reduce((a, st) => a + (st.vals[i] || 0), 0); if (s > ymax) ymax = s; }
-  const Y = yAxis(g, L, R, T, ph, W, ymax || 1, yfmt), bw = pw / Math.max(1, n);
+  if (line) for (const v of line.vals) if (v != null && v > ymax) ymax = v;
+  const bw = pw / Math.max(1, n);
+  for (const b of bands || []) { g.fillStyle = b.color; g.fillRect(L + (b.a + 0.5) * bw, T, (b.b - b.a) * bw, ph); }
+  const Y = yAxis(g, L, R, T, ph, W, ymax || 1, yfmt);
   const every = Math.ceil(n / Math.max(1, Math.floor(pw / 46)));
   for (let i = 0; i < n; i++) {
     let acc = 0;
     for (const st of stacks) { const v = st.vals[i] || 0; g.fillStyle = st.color; g.fillRect(L + i * bw + bw * 0.15, Y(acc + v), Math.max(1, bw * 0.7), Y(acc) - Y(acc + v)); acc += v; }
     if (i % every === 0) { g.fillStyle = '#6b7280'; g.textAlign = 'center'; g.fillText(cats[i], L + i * bw + bw / 2, T + ph + 16); }
   }
-  legend(box, stacks, true);
+  if (line) {
+    g.strokeStyle = line.color; g.lineWidth = 2; g.beginPath(); let pen = false;
+    line.vals.forEach((v, i) => { const x = L + i * bw + bw / 2; if (v == null) { pen = false; return; } pen ? g.lineTo(x, Y(v)) : g.moveTo(x, Y(v)); pen = true; });
+    g.stroke(); g.fillStyle = line.color;
+    line.vals.forEach((v, i) => { if (v != null) { g.beginPath(); g.arc(L + i * bw + bw / 2, Y(v), 3, 0, 7); g.fill(); } });
+  }
+  legend(box, line ? stacks.concat([line]) : stacks, true);
   cv.onmousemove = e => { const r = cv.getBoundingClientRect(); const i = Math.floor((e.clientX - r.left - L) / bw); if (i < 0 || i >= n) return hideTip(); showTip(e, tipFn(i)); };
   cv.onmouseleave = hideTip;
 }
@@ -321,12 +330,25 @@ function tabHeat(p) {
 
 // ---------------------------------------------------------------- 日別トレンド
 function tabDaily(p) {
-  head(p, '日ごとの推移', [btn('10〜16時', S.dayMode === 'day', () => { S.dayMode = 'day'; render(); }), btn('一日中', S.dayMode === 'all', () => { S.dayMode = 'all'; render(); }), btn('夜0〜5時', S.dayMode === 'night', () => { S.dayMode = 'night'; render(); }), btn('来た人（分類後）', S.dayMode === 'people', () => { S.dayMode = 'people'; render(); })]);
+  head(p, '日ごとの推移', [btn('折れ線', S.dayChart === 'line', () => { S.dayChart = 'line'; render(); }), btn('積み上げ', S.dayChart === 'stack', () => { S.dayChart = 'stack'; S.dayMode = 'people'; render(); }), lbl(' '), btn('10〜16時', S.dayMode === 'day', () => { S.dayMode = 'day'; render(); }), btn('一日中', S.dayMode === 'all', () => { S.dayMode = 'all'; render(); }), btn('夜0〜5時', S.dayMode === 'night', () => { S.dayMode = 'night'; render(); }), btn('来た人（分類後）', S.dayMode === 'people', () => { S.dayMode = 'people'; render(); })]);
   p.appendChild(el('p', 'note', (S.dayMode === 'people' ? 'その日その拠点で見えた来た人（素通り＋立ち寄り＋長居。車・スタッフを除く）。' : S.dayMode === 'night' ? '夜0〜5時の30分あたりの平均端末数。置きっぱなしの機器や夜の人通りを見る用。' : '30分ごとのユニーク数を足したもの（同じ人が長くいると重ねて数える）。増減や段差を見る用。') + BAND_NOTE));
   const days = rangeDays(), n = days.length;
   const series = selNodes().map(k => ({ name: k, color: COLORS[k], vals: days.map(d => { const r = DAY[k][d]; if (S.dayMode === 'people') { const c = D.catDay[k]; const t = c.pass[d] + c.stop[d] + c.long[d]; return t || null; } return r.cov === 0 ? null : S.dayMode === 'night' ? r.night : r[S.dayMode]; }) }));
   const box = el('div'); p.appendChild(box);
-  lineChart(box, { n, series, label: i => mdw(days[i]), hoverLabel: i => mdw(days[i]) + (evName(days[i]) ? ' ' + evName(days[i]) : ''), yfmt: v => S.dayMode === 'night' ? (Math.round(v * 10) / 10).toString() : fmt(v), bands: dayBands(S.from, S.to, 1) });
+  const yf = v => S.dayMode === 'night' ? (Math.round(v * 10) / 10).toString() : fmt(v);
+  if (S.dayChart === 'line') {
+    lineChart(box, { n, series, label: i => mdw(days[i]), hoverLabel: i => mdw(days[i]) + (evName(days[i]) ? ' ' + evName(days[i]) : ''), yfmt: yf, bands: dayBands(S.from, S.to, 1) });
+    return;
+  }
+  // 積み上げ：「来た人（分類後）」のときは、重複を除いた本当の人数を線で重ねる
+  let line = null;
+  if (S.dayMode === 'people') {
+    const byDay = {}; for (const r of roamRows()) byDay[r[0]] = (byDay[r[0]] || 0) + r[2];
+    line = { name: '来た人（重複を除く・' + areaLabel().replace(/（.*）/, '') + '）', color: '#111827', vals: days.map(d => byDay[d] || null) };
+  }
+  p.insertBefore(el('p', 'note', line ? '棒＝拠点ごとの来た人を積んだもの（2か所以上を回った人は重ねて数える）。黒い線＝同じ人を1回だけ数えた人数。棒と線の差が、回遊による重なり。' : '棒の高さは拠点ごとの値を足したもので、人数ではない（人数を見るなら「来た人（分類後）」を選ぶ）。積み上げは一番下以外の増減が読みにくいので、拠点ごとの変化は「折れ線」で見る。'), box);
+  stackBars(box, { cats: days.map(md), stacks: series.map(s => ({ name: s.name, color: s.color, vals: s.vals })), yfmt: yf, line, bands: dayBands(S.from, S.to, 1).map(b => ({ a: b.a, b: b.b, color: b.color })),
+    tipFn: i => { const d = days[i]; const tot = series.reduce((a, s) => a + (s.vals[i] || 0), 0); return `<b>${mdw(d)}${evName(d) ? ' ' + evName(d) : ''}</b><br>` + series.slice().reverse().map(s => `<span style="color:${s.color}">■</span> ${s.name}: ${s.vals[i] == null ? 'データなし' : yf(s.vals[i])}`).join('<br>') + `<br>棒の合計: ${yf(tot)}` + (line && line.vals[i] != null ? `<br><b>来た人（重複を除く）: ${fmt(line.vals[i])}</b>` : ''); } });
 }
 
 // ---------------------------------------------------------------- 回遊
