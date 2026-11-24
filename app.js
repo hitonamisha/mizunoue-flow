@@ -1,0 +1,443 @@
+/* 水上ビル 人流ダッシュボード
+ * データ（JSON）は Google Apps Script が毎朝 BigQuery で集計したもの。
+ * 形式は gas/Code.gs の buildData() を参照（slot30 / catDay / catHr / roamHr / roamNode / covisit / moves）
+ */
+'use strict';
+
+const COLORS = { 'A棟': '#2563eb', 'B棟': '#059669', 'C棟': '#dc2626', 'D棟': '#d97706', 'ひとなる図書館': '#7c3aed', '大手ビル西': '#0d9488' };
+const EXTRA = ['#db2777', '#4b5563', '#65a30d', '#0891b2'];
+const CATS = [
+  { k: 'pass', name: '素通り', desc: '1分未満', color: '#93c5fd' },
+  { k: 'stop', name: '立ち寄り', desc: '1〜15分', color: '#2563eb' },
+  { k: 'long', name: '長居', desc: '15〜90分', color: '#1e3a8a' },
+  { k: 'staff', name: 'スタッフ', desc: '90分以上', color: '#fbbf24' },
+  { k: 'car', name: '車', desc: 'A・B・D棟で1秒以下', color: '#d1d5db' },
+];
+const WD = '日月火水木金土';
+const TABS = ['時系列', '滞在の内訳', 'ヒートマップ', '日別トレンド', '回遊', 'ノード間移動', '機器チェック'];
+
+let D, NDAY, HOL, EV, NODES, DAY, BASE;
+const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'day', dt: 'all', showOther: false, skip1: true };
+const $ = id => document.getElementById(id);
+const tip = $('tip');
+
+// ---------------------------------------------------------------- 日付
+const T0 = () => Date.UTC(+D.start.slice(0, 4), +D.start.slice(5, 7) - 1, +D.start.slice(8, 10));
+const dayStr = i => new Date(T0() + i * 864e5).toISOString().slice(0, 10);
+const dayIdx = s => Math.round((Date.parse(s + 'T00:00:00Z') - T0()) / 864e5);
+const dow = i => new Date(T0() + i * 864e5).getUTCDay();
+const md = i => { const d = new Date(T0() + i * 864e5); return (d.getUTCMonth() + 1) + '/' + d.getUTCDate(); };
+const mdw = i => md(i) + '(' + WD[dow(i)] + ')';
+const isOff = i => dow(i) === 0 || dow(i) === 6 || HOL.has(dayStr(i));
+const evName = i => EV[dayStr(i)] || '';
+const inDt = i => S.dt === 'all' || (S.dt === 'off') === isOff(i);
+const fmt = n => Math.round(n).toLocaleString();
+const pct = (a, b) => b ? Math.round(a / b * 1000) / 10 : 0;
+
+// ---------------------------------------------------------------- 起動
+async function boot() {
+  try {
+    const r = await fetch(window.DATA_URL, { cache: 'no-store' });
+    if (!r.ok) throw new Error('データを取得できませんでした（' + r.status + '）');
+    D = await r.json();
+    if (D.error) throw new Error(D.error);
+  } catch (e) {
+    $('updated').textContent = '';
+    $('pane').innerHTML = '<div class="err">' + e.message + '</div>';
+    return;
+  }
+  NDAY = D.days;
+  HOL = new Set(D.holidays || []);
+  EV = D.events || {};
+  NODES = D.nodes;
+  NODES.forEach((k, i) => { if (!COLORS[k]) COLORS[k] = EXTRA[i % EXTRA.length]; });
+  NODES.forEach(k => S.sel.add(k));
+  for (const k of NODES) while (D.slot30[k].length < NDAY * 48) D.slot30[k].push(null);
+  prepDay();
+  const m = location.hash.match(/^#tab(\d)$/); if (m && +m[1] < TABS.length) S.tab = +m[1];
+  S.to = Math.max(0, NDAY - 2);              // 既定は昨日まで
+  S.from = Math.max(0, S.to - 6);
+  $('updated').textContent = '最終更新: ' + D.generated.replace('T', ' ').slice(0, 16) + '（毎朝6時ごろ更新）／ データ: ' + md(0) + '〜' + md(NDAY - 1);
+  $('from').onchange = e => { S.from = clamp(dayIdx(e.target.value), 0, S.to); render(); };
+  $('to').onchange = e => { S.to = clamp(dayIdx(e.target.value), S.from, NDAY - 1); render(); };
+  let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 150); });
+  render();
+}
+const clamp = (v, a, b) => Math.max(a, Math.min(b, isNaN(v) ? a : v));
+
+// 日ごとの稼働率・日中・夜の値と、普段の値（機器チェック用）
+function prepDay() {
+  DAY = {}; BASE = {};
+  for (const k of NODES) {
+    const u = D.slot30[k], a = [];
+    for (let d = 0; d < NDAY; d++) {
+      let cov = 0, day = 0, all = 0, night = 0, nn = 0;
+      for (let s = 0; s < 48; s++) {
+        const v = u[d * 48 + s]; if (v == null) continue;
+        cov++; all += v; if (s >= 20 && s < 32) day += v; if (s < 10) { night += v; nn++; }
+      }
+      a.push({ cov, day, all, night: nn ? night / nn : null });
+    }
+    DAY[k] = a;
+    const ok = d => a[d].cov >= 44 && !evName(d) && d < NDAY - 1;
+    const idx = [...Array(NDAY).keys()].filter(ok);
+    BASE[k] = {
+      off: median(idx.filter(isOff).map(d => a[d].day)),
+      on: median(idx.filter(d => !isOff(d)).map(d => a[d].day)),
+      night: median(idx.map(d => a[d].night)),
+    };
+  }
+}
+function median(arr) { const b = arr.filter(x => x != null).sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : null; }
+function flags(k, d) {
+  const r = DAY[k][d], f = [];
+  if (r.cov === 0) return ['none'];
+  if (r.cov < 38) f.push('gap');
+  const b = isOff(d) ? BASE[k].off : BASE[k].on;
+  if (b && r.cov >= 38) { if (r.day < b * 0.5) f.push('low'); if (r.day > b * 1.8) f.push('high'); }
+  const n = BASE[k].night;
+  if (n != null && r.night != null && r.night > Math.max(n * 2, n + 5)) f.push('night');
+  return f;
+}
+
+// ---------------------------------------------------------------- 共通UI
+function btn(label, on, fn) { const b = document.createElement('button'); b.className = 'b' + (on ? ' on' : ''); b.textContent = label; b.onclick = fn; return b; }
+function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+function head(p, title, controls) { const h = el('div', 'head'); h.appendChild(el('b', null, title)); const c = el('span', 'row'); (controls || []).forEach(x => c.appendChild(x)); h.appendChild(c); p.appendChild(h); }
+function lbl(t) { return el('span', 'lbl', t); }
+function dtButtons() { return [['all', '全部'], ['on', '平日'], ['off', '土日祝']].map(([k, l]) => btn(l, S.dt === k, () => { S.dt = k; render(); })); }
+function selNodes() { return NODES.filter(k => S.sel.has(k)); }
+function rangeDays() { const a = []; for (let d = S.from; d <= S.to; d++) a.push(d); return a; }
+
+function renderControls() {
+  const q = $('quick'); q.innerHTML = '';
+  const last = NDAY - 2;
+  for (const [l, n] of [['昨日', 1], ['7日', 7], ['30日', 30], ['全期間', NDAY - 1]]) {
+    q.appendChild(btn(l, S.to === last && S.to - S.from + 1 === n, () => { S.to = last; S.from = Math.max(0, last - n + 1); render(); }));
+  }
+  q.appendChild(btn('今日（途中）', S.from === NDAY - 1 && S.to === NDAY - 1, () => { S.from = S.to = NDAY - 1; render(); }));
+  for (const id of ['from', 'to']) { $(id).min = dayStr(0); $(id).max = dayStr(NDAY - 1); }
+  $('from').value = dayStr(S.from); $('to').value = dayStr(S.to);
+  const c = $('chips'); c.innerHTML = '';
+  for (const k of NODES) {
+    const b = el('button', 'chip' + (S.sel.has(k) ? '' : ' off'), k); b.style.background = COLORS[k];
+    b.onclick = () => { S.sel.has(k) ? S.sel.delete(k) : S.sel.add(k); render(); };
+    c.appendChild(b);
+  }
+  const t = $('tabs'); t.innerHTML = '';
+  TABS.forEach((l, i) => { const b = el('button', 'tab' + (S.tab === i ? ' on' : ''), l); b.onclick = () => { S.tab = i; history.replaceState(null, '', '#tab' + i); render(); }; t.appendChild(b); });
+}
+
+function renderKpis() {
+  const days = rangeDays(), nodes = selNodes();
+  let v = 0, rs = 0;
+  for (const r of D.roamHr) if (r[0] >= S.from && r[0] <= S.to) { v += r[2]; rs += r[6]; }
+  let pass = 0, stay = 0;
+  for (const k of nodes) for (const d of days) { pass += D.catDay[k].pass[d]; stay += D.catDay[k].stop[d] + D.catDay[k].long[d]; }
+  let cov = 0; for (const k of nodes) for (const d of days) cov += DAY[k][d].cov;
+  const cards = [
+    ['来た人（1日平均）', fmt(v / days.length), '商店街全体・車とスタッフを除く'],
+    ['立ち寄り率', pct(stay, pass + stay) + '%', '選んだ拠点で1分以上いた人の割合'],
+    ['寄り道回遊率', pct(rs, v) + '%', '2か所以上で見えて、どこかで1分以上いた人'],
+    ['稼働率', nodes.length ? Math.round(cov / (nodes.length * days.length * 48) * 100) + '%' : '-', '30分枠のうちデータが届いた割合'],
+  ];
+  $('kpis').innerHTML = cards.map(([t, val, s]) => `<div class="kpi"><div class="t">${t}</div><div class="v">${val}</div><div class="s">${s}</div></div>`).join('');
+}
+
+// ---------------------------------------------------------------- グラフ部品（canvas）
+function setupCanvas(box, H) {
+  const cv = document.createElement('canvas'); box.appendChild(cv);
+  const dpr = window.devicePixelRatio || 1, W = Math.max(300, box.clientWidth);
+  cv.width = W * dpr; cv.height = H * dpr; cv.style.height = H + 'px';
+  const g = cv.getContext('2d'); g.scale(dpr, dpr); g.font = '11px sans-serif';
+  return { cv, g, W };
+}
+function niceStep(x) { const p = Math.pow(10, Math.floor(Math.log10(x || 1))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= x) return m * p; return 10 * p; }
+function yAxis(g, L, R, T, ph, W, ymax, yfmt) {
+  const step = niceStep(ymax / 4); ymax = Math.ceil(ymax / step) * step || 1;
+  const Y = v => T + ph - v / ymax * ph;
+  g.strokeStyle = '#eef0f3'; g.fillStyle = '#6b7280'; g.textAlign = 'right';
+  for (let v = 0; v <= ymax + 1e-9; v += step) { g.beginPath(); g.moveTo(L, Y(v)); g.lineTo(W - R, Y(v)); g.stroke(); g.fillText(yfmt(v), L - 6, Y(v) + 4); }
+  return Y;
+}
+function legend(box, items, bar) { const lg = el('div', 'legend', items.map(s => `<span><i style="background:${s.color};${bar ? 'height:10px' : ''}"></i>${s.name}</span>`).join('')); box.prepend(lg); }
+function showTip(e, html) { tip.innerHTML = html; tip.style.display = 'block'; tip.style.left = Math.min(e.clientX + 14, innerWidth - 260) + 'px'; tip.style.top = (e.clientY + 14) + 'px'; }
+function hideTip() { tip.style.display = 'none'; }
+
+function lineChart(box, { n, series, label, hoverLabel, yfmt, bands }) {
+  const H = 340, { cv, g, W } = setupCanvas(box, H);
+  const L = 52, R = 12, T = 10, B = 58, pw = W - L - R, ph = H - T - B;
+  let ymax = 0; for (const s of series) for (const v of s.vals) if (v != null && v > ymax) ymax = v;
+  const X = i => L + (n <= 1 ? pw / 2 : i / (n - 1) * pw);
+  for (const b of bands || []) { g.fillStyle = b.color; const x0 = n <= 1 ? L : X(b.a), x1 = n <= 1 ? L + pw : X(b.b); g.fillRect(x0, T, Math.max(1, x1 - x0), ph); }
+  const Y = yAxis(g, L, R, T, ph, W, ymax || 1, yfmt);
+  const nt = Math.max(1, Math.min(n, Math.floor(pw / 70)));
+  g.fillStyle = '#6b7280';
+  for (let t = 0; t < nt; t++) { const i = nt === 1 ? 0 : Math.round(t * (n - 1) / (nt - 1)); g.save(); g.translate(X(i), T + ph + 8); g.rotate(-Math.PI / 5); g.textAlign = 'right'; g.fillText(label(i), 0, 4); g.restore(); }
+  for (const s of series) {
+    g.strokeStyle = s.color; g.lineWidth = 1.6; g.beginPath(); let pen = false;
+    s.vals.forEach((v, i) => { if (v == null) { pen = false; return; } pen ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v)); pen = true; });
+    g.stroke();
+    if (n <= 40) { g.fillStyle = s.color; s.vals.forEach((v, i) => { if (v != null) { g.beginPath(); g.arc(X(i), Y(v), 2.5, 0, 7); g.fill(); } }); }
+  }
+  legend(box, series);
+  cv.onmousemove = e => {
+    const r = cv.getBoundingClientRect(); const i = n <= 1 ? 0 : Math.round((e.clientX - r.left - L) / pw * (n - 1));
+    if (i < 0 || i >= n) return hideTip();
+    showTip(e, '<b>' + (hoverLabel || label)(i) + '</b><br>' + series.map(s => `<span style="color:${s.color}">●</span> ${s.name}: ${s.vals[i] == null ? 'データなし' : yfmt(s.vals[i])}`).join('<br>'));
+  };
+  cv.onmouseleave = hideTip;
+}
+
+function stackBars(box, { cats, stacks, yfmt, tipFn, H }) {
+  H = H || 320; const { cv, g, W } = setupCanvas(box, H);
+  const L = 52, R = 12, T = 10, B = 40, pw = W - L - R, ph = H - T - B, n = cats.length;
+  let ymax = 0; for (let i = 0; i < n; i++) { const s = stacks.reduce((a, st) => a + (st.vals[i] || 0), 0); if (s > ymax) ymax = s; }
+  const Y = yAxis(g, L, R, T, ph, W, ymax || 1, yfmt), bw = pw / Math.max(1, n);
+  const every = Math.ceil(n / Math.max(1, Math.floor(pw / 46)));
+  for (let i = 0; i < n; i++) {
+    let acc = 0;
+    for (const st of stacks) { const v = st.vals[i] || 0; g.fillStyle = st.color; g.fillRect(L + i * bw + bw * 0.15, Y(acc + v), Math.max(1, bw * 0.7), Y(acc) - Y(acc + v)); acc += v; }
+    if (i % every === 0) { g.fillStyle = '#6b7280'; g.textAlign = 'center'; g.fillText(cats[i], L + i * bw + bw / 2, T + ph + 16); }
+  }
+  legend(box, stacks, true);
+  cv.onmousemove = e => { const r = cv.getBoundingClientRect(); const i = Math.floor((e.clientX - r.left - L) / bw); if (i < 0 || i >= n) return hideTip(); showTip(e, tipFn(i)); };
+  cv.onmouseleave = hideTip;
+}
+function dayBands(a, b, per) {
+  const out = [];
+  for (let d = a; d <= b; d++) {
+    const i0 = (d - a) * per - (per === 1 ? 0.5 : 0), i1 = (d - a + 1) * per - (per === 1 ? 0.5 : 1);
+    if (evName(d)) out.push({ a: i0, b: i1, color: 'rgba(234,88,12,.12)' });
+    else if (isOff(d)) out.push({ a: i0, b: i1, color: 'rgba(37,99,235,.06)' });
+  }
+  return out;
+}
+const BAND_NOTE = '薄い青＝土日祝、薄いオレンジ＝朝市・まつり・イベントの日。';
+
+// ---------------------------------------------------------------- 時系列
+function tabSeries(p) {
+  const c = [btn('なめらか', S.smooth, () => { S.smooth = true; render(); }), btn('実数', !S.smooth, () => { S.smooth = false; render(); }), lbl(' 単位:')];
+  for (const [k, l] of [['count', '台数'], ['avg', '平均=100'], ['max', '最大=100']]) c.push(btn(l, S.unit === k, () => { S.unit = k; render(); }));
+  if (S.smooth) { c.push(lbl(' ならす幅:')); for (const w of [1, 3, 6]) c.push(btn(w + '時間', S.win === w, () => { S.win = w; render(); })); }
+  head(p, '時間帯別ユニーク端末数（30分ごと）', c);
+  p.appendChild(el('p', 'note', (S.smooth ? `前後${S.win}時間の平均でならした値（データのない枠は0として計算）。` : '30分ごとの実数。データのない枠は線が途切れる。') +
+    { count: '', avg: '各拠点の期間平均を100とした比率（150＝普段の1.5倍）。', max: '各拠点の期間中の最大を100とした比率（混む時間の形を比べる用。どこが多いかは「台数」で見る）。' }[S.unit] +
+    ' 車・スタッフを含む機器の生の数。' + BAND_NOTE));
+  const a = S.from * 48, b = (S.to + 1) * 48, n = b - a, series = [];
+  for (const k of selNodes()) {
+    let v = D.slot30[k].slice(a, b);
+    if (S.smooth) {
+      const half = S.win, pre = [0]; for (const x of v) pre.push(pre[pre.length - 1] + (x || 0));
+      v = v.map((_, i) => { const lo = Math.max(0, i - half), hi = Math.min(n, i + half + 1); return (pre[hi] - pre[lo]) / (hi - lo); });
+    }
+    if (S.unit !== 'count') {
+      const vs = v.filter(x => x != null); const ref = S.unit === 'max' ? Math.max(...vs) : vs.reduce((x, y) => x + y, 0) / (vs.length || 1);
+      v = v.map(x => x == null ? null : ref ? x / ref * 100 : 0);
+    }
+    series.push({ name: k, color: COLORS[k], vals: v });
+  }
+  const box = el('div'); p.appendChild(box);
+  lineChart(box, { n, series, yfmt: v => fmt(v), bands: dayBands(S.from, S.to, 48),
+    label: i => { const d = S.from + Math.floor(i / 48), s = i % 48; return mdw(d) + ' ' + String(s >> 1).padStart(2, '0') + ':' + (s % 2 ? '30' : '00'); },
+    hoverLabel: i => { const d = S.from + Math.floor(i / 48), s = i % 48; return mdw(d) + ' ' + String(s >> 1).padStart(2, '0') + ':' + (s % 2 ? '30' : '00') + (evName(d) ? ' ' + evName(d) : ''); } });
+}
+
+// ---------------------------------------------------------------- 滞在の内訳
+function tabStay(p) {
+  const cats = CATS.filter(c => S.showOther || ['pass', 'stop', 'long'].includes(c.k));
+  head(p, '素通り・立ち寄り・長居', [btn('来た人だけ', !S.showOther, () => { S.showOther = false; render(); }), btn('車・スタッフも', S.showOther, () => { S.showOther = true; render(); })]);
+  const days = rangeDays(), nodes = selNodes(), hourly = days.length <= 3;
+  p.appendChild(el('p', 'note', 'その日・その拠点で最初に見えてから最後に見えるまでの長さで分類。' + (hourly ? '3日以内なので1時間ごと（その時間にいた端末数）。' : '日ごと（その日に見えた端末数）。') + '選んだ拠点の合計（拠点をまたいだ人は拠点ごとに数える）。'));
+  const box = el('div'); p.appendChild(box);
+  if (hourly) {
+    const n = days.length * 24, labels = [], stacks = cats.map(c => ({ name: c.name, color: c.color, vals: new Array(n).fill(0) }));
+    for (let i = 0; i < n; i++) { const d = S.from + Math.floor(i / 24), h = i % 24; labels.push(h === 0 ? md(d) : h + '時'); cats.forEach((c, j) => { for (const k of nodes) stacks[j].vals[i] += D.catHr[k][c.k][d * 24 + h]; }); }
+    stackBars(box, { cats: labels, stacks, yfmt: fmt, tipFn: i => { const d = S.from + Math.floor(i / 24); return `<b>${mdw(d)} ${i % 24}時</b><br>` + stacks.map(s => `<span style="color:${s.color}">■</span> ${s.name}: ${fmt(s.vals[i])}`).join('<br>'); } });
+  } else {
+    const stacks = cats.map(c => ({ name: c.name, color: c.color, vals: days.map(d => nodes.reduce((a, k) => a + D.catDay[k][c.k][d], 0)) }));
+    stackBars(box, { cats: days.map(md), stacks, yfmt: fmt, tipFn: i => { const d = days[i]; const tot = stacks.filter(s => ['素通り', '立ち寄り', '長居'].includes(s.name)).reduce((a, s) => a + s.vals[i], 0); const st = stacks.filter(s => ['立ち寄り', '長居'].includes(s.name)).reduce((a, s) => a + s.vals[i], 0); return `<b>${mdw(d)}${evName(d) ? ' ' + evName(d) : ''}</b><br>` + stacks.map(s => `<span style="color:${s.color}">■</span> ${s.name}: ${fmt(s.vals[i])}`).join('<br>') + `<br>立ち寄り率 ${pct(st, tot)}%`; } });
+  }
+  // 拠点ごとの内訳
+  const sec = el('div', 'sec'); p.appendChild(sec);
+  head(sec, '拠点ごとの内訳（期間の合計）');
+  sec.appendChild(el('p', 'note', '横棒は、来た人（素通り＋立ち寄り＋長居）を100%とした内訳。右は立ち寄り率（1分以上いた人の割合）。'));
+  let h = '<table class="list"><tr><th>拠点</th><th class="r">来た人</th><th style="width:40%">内訳</th><th class="r">立ち寄り率</th><th class="r">車</th><th class="r">スタッフ</th></tr>';
+  for (const k of nodes) {
+    const t = {}; for (const c of CATS) t[c.k] = days.reduce((a, d) => a + D.catDay[k][c.k][d], 0);
+    const tot = t.pass + t.stop + t.long;
+    const seg = ['pass', 'stop', 'long'].map(c => `<div style="width:${tot ? t[c] / tot * 100 : 0}%;background:${CATS.find(x => x.k === c).color}" title="${CATS.find(x => x.k === c).name} ${pct(t[c], tot)}%"></div>`).join('');
+    h += `<tr><td><span style="color:${COLORS[k]}">●</span> ${k}</td><td class="r">${fmt(tot)}</td><td><div class="bar">${seg}</div></td><td class="r"><b>${pct(t.stop + t.long, tot)}%</b></td><td class="r">${fmt(t.car)}</td><td class="r">${fmt(t.staff)}</td></tr>`;
+  }
+  sec.insertAdjacentHTML('beforeend', h + '</table>');
+}
+
+// ---------------------------------------------------------------- ヒートマップ
+function tabHeat(p) {
+  const c = [btn('台数', S.hmMetric === 'count', () => { S.hmMetric = 'count'; render(); }), btn('立ち寄り率', S.hmMetric === 'stay', () => { S.hmMetric = 'stay'; render(); }), lbl(' 拠点:'), btn('選択中の合計', S.hmNode === 'all', () => { S.hmNode = 'all'; render(); })];
+  for (const k of selNodes()) c.push(btn(k, S.hmNode === k, () => { S.hmNode = k; render(); }));
+  head(p, '曜日×時間', c);
+  const nodes = S.hmNode === 'all' || !S.sel.has(S.hmNode) ? selNodes() : [S.hmNode];
+  const acc = [...Array(8)].map(() => Array(24).fill(0)), acc2 = [...Array(8)].map(() => Array(24).fill(0)), cnt = [...Array(8)].map(() => Array(24).fill(0));
+  for (let d = S.from; d <= S.to; d++) {
+    const r = HOL.has(dayStr(d)) ? 7 : (dow(d) + 6) % 7;
+    for (let h = 0; h < 24; h++) {
+      if (S.hmMetric === 'count') {
+        let v = 0, any = false; for (const k of nodes) for (const s of [h * 2, h * 2 + 1]) { const x = D.slot30[k][d * 48 + s]; if (x != null) { v += x; any = true; } }
+        if (any) { acc[r][h] += v; cnt[r][h]++; }
+      } else {
+        for (const k of nodes) { const i = d * 24 + h; acc[r][h] += D.catHr[k].stop[i] + D.catHr[k].long[i]; acc2[r][h] += D.catHr[k].pass[i] + D.catHr[k].stop[i] + D.catHr[k].long[i]; }
+        cnt[r][h] = 1;
+      }
+    }
+  }
+  const val = acc.map((row, r) => row.map((v, h) => S.hmMetric === 'count' ? (cnt[r][h] ? v / cnt[r][h] : null) : (acc2[r][h] >= 20 ? v / acc2[r][h] * 100 : null)));
+  const all = val.flat().filter(v => v != null), mx = Math.max(...all, 1), mn = S.hmMetric === 'stay' ? Math.min(...all) : 0;
+  p.appendChild(el('p', 'note', S.hmMetric === 'count' ? '1時間あたりの延べ端末数の平均（車・スタッフを含む）。色が濃いほど多い。祝日は「祝」の行にまとめた。' : 'その時間にいた人のうち、その拠点で1分以上いた人の割合。濃いほど「止まる」時間帯。人が少ない枠は空白。'));
+  let h = '<div class="scroll"><table class="grid"><tr><th></th>' + [...Array(24).keys()].map(x => `<th>${x}</th>`).join('') + '</tr>';
+  ['月', '火', '水', '木', '金', '土', '日', '祝'].forEach((l, r) => {
+    h += `<tr><th>${l}</th>` + val[r].map((v, hh) => v == null ? '<td style="background:#f3f4f6;min-width:34px"></td>' :
+      `<td title="${l} ${hh}時: ${S.hmMetric === 'count' ? fmt(v) + '台' : v.toFixed(1) + '%'}" style="min-width:34px;background:rgba(37,99,235,${(0.06 + 0.94 * (v - mn) / ((mx - mn) || 1)).toFixed(2)})"></td>`).join('') + '</tr>';
+  });
+  p.insertAdjacentHTML('beforeend', h + '</table></div>');
+}
+
+// ---------------------------------------------------------------- 日別トレンド
+function tabDaily(p) {
+  head(p, '日ごとの推移', [btn('10〜16時', S.dayMode === 'day', () => { S.dayMode = 'day'; render(); }), btn('一日中', S.dayMode === 'all', () => { S.dayMode = 'all'; render(); }), btn('夜0〜5時', S.dayMode === 'night', () => { S.dayMode = 'night'; render(); }), btn('来た人（分類後）', S.dayMode === 'people', () => { S.dayMode = 'people'; render(); })]);
+  p.appendChild(el('p', 'note', (S.dayMode === 'people' ? 'その日その拠点で見えた来た人（素通り＋立ち寄り＋長居。車・スタッフを除く）。' : S.dayMode === 'night' ? '夜0〜5時の30分あたりの平均端末数。置きっぱなしの機器や夜の人通りを見る用。' : '30分ごとのユニーク数を足したもの（同じ人が長くいると重ねて数える）。増減や段差を見る用。') + BAND_NOTE));
+  const days = rangeDays(), n = days.length;
+  const series = selNodes().map(k => ({ name: k, color: COLORS[k], vals: days.map(d => { const r = DAY[k][d]; if (S.dayMode === 'people') { const c = D.catDay[k]; const t = c.pass[d] + c.stop[d] + c.long[d]; return t || null; } return r.cov === 0 ? null : S.dayMode === 'night' ? r.night : r[S.dayMode]; }) }));
+  const box = el('div'); p.appendChild(box);
+  lineChart(box, { n, series, label: i => mdw(days[i]), hoverLabel: i => mdw(days[i]) + (evName(days[i]) ? ' ' + evName(days[i]) : ''), yfmt: v => S.dayMode === 'night' ? (Math.round(v * 10) / 10).toString() : fmt(v), bands: dayBands(S.from, S.to, 1) });
+}
+
+// ---------------------------------------------------------------- 回遊
+function tabRoam(p) {
+  head(p, '何時に来た人が回遊するか（到着時間別）', dtButtons());
+  p.appendChild(el('p', 'note', 'その日最初に見えた時間ごとに、2か所以上で見えた人の割合。<b>通り抜け</b>＝どこにも1分以上いなかった人、<b>寄り道回遊</b>＝どこかで1分以上いた人。車・スタッフは除く。商店街全体の数字なので拠点の選択は効かない。'));
+  const hr = [...Array(24)].map(() => [0, 0, 0, 0, 0, 0]);
+  for (const r of D.roamHr) if (r[0] >= S.from && r[0] <= S.to && inDt(r[0])) for (let j = 2; j < 7; j++) hr[r[1]][j - 2] += r[j];
+  const box = el('div'); p.appendChild(box);
+  const rs = hr.map(x => pct(x[4], x[0])), wt = hr.map(x => pct(x[3], x[0]));
+  stackBars(box, { cats: [...Array(24).keys()].map(String), stacks: [{ name: '寄り道回遊', color: '#059669', vals: rs }, { name: '通り抜け', color: '#cbd5e1', vals: wt }], yfmt: v => v + '%',
+    tipFn: i => `<b>${i}時に来た人</b><br>来た人 ${fmt(hr[i][0])}<br><span style="color:#34d399">■</span> 寄り道回遊 ${rs[i]}%<br><span style="color:#cbd5e1">■</span> 通り抜け ${wt[i]}%<br>3か所以上 ${pct(hr[i][2], hr[i][0])}%` });
+  const ok = [...Array(24).keys()].filter(i => hr[i][0] >= 200);
+  if (ok.length) {
+    const hi = ok.reduce((a, b) => rs[b] > rs[a] ? b : a), wh = ok.reduce((a, b) => wt[b] > wt[a] ? b : a);
+    p.appendChild(el('p', 'note', `📌 寄り道回遊が一番多いのは <b>${hi}時着（${rs[hi]}%）</b>、通り抜けが一番多いのは <b>${wh}時着（${wt[wh]}%）</b>。遅い時間に来た人は閉店まで時間が短いので、回遊は自然と下がる。`));
+  }
+
+  // 日ごと
+  let sec = el('div', 'sec'); p.appendChild(sec);
+  head(sec, '日ごとの回遊率');
+  sec.appendChild(el('p', 'note', '車・スタッフを除いた来た人のうちの割合。' + BAND_NOTE));
+  const days = rangeDays(), byDay = {};
+  for (const r of D.roamHr) { if (!byDay[r[0]]) byDay[r[0]] = [0, 0, 0, 0, 0]; for (let j = 2; j < 7; j++) byDay[r[0]][j - 2] += r[j]; }
+  const g = f => days.map(d => { const x = byDay[d]; return x && x[0] >= 500 ? f(x) : null; });
+  const b2 = el('div'); sec.appendChild(b2);
+  lineChart(b2, { n: days.length, series: [{ name: '2か所以上', color: '#2563eb', vals: g(x => x[1] / x[0] * 100) }, { name: '寄り道回遊', color: '#059669', vals: g(x => x[4] / x[0] * 100) }, { name: '3か所以上', color: '#7c3aed', vals: g(x => x[2] / x[0] * 100) }],
+    label: i => mdw(days[i]), hoverLabel: i => mdw(days[i]) + (evName(days[i]) ? ' ' + evName(days[i]) : '') + (byDay[days[i]] ? '　来た人 ' + fmt(byDay[days[i]][0]) : ''), yfmt: v => (Math.round(v * 10) / 10) + '%', bands: dayBands(S.from, S.to, 1) });
+
+  // 拠点ごと
+  sec = el('div', 'sec'); p.appendChild(sec);
+  head(sec, '拠点ごとの回遊', dtButtons());
+  sec.appendChild(el('p', 'note', 'その拠点で見えた人を100%として、<b>ここで1分以上いた</b>割合と、<b>ほかの拠点にも行った</b>割合（緑＝寄り道回遊、グレー＝通り抜け）。'));
+  const agg = {}; for (const k of NODES) agg[k] = [0, 0, 0, 0, 0, 0];
+  for (const r of D.roamNode) if (r[0] >= S.from && r[0] <= S.to && inDt(r[0]) && agg[r[1]]) for (let j = 2; j < 8; j++) agg[r[1]][j - 2] += r[j];
+  let h = '<table class="list"><tr><th>拠点</th><th class="r">来た人</th><th style="width:28%">ここで1分以上いた</th><th style="width:36%">ほかの拠点にも行った</th><th class="r">平均の拠点数</th></tr>';
+  for (const k of selNodes()) {
+    const [v, here, r, w, rsn, locs] = agg[k]; if (!v) continue;
+    h += `<tr><td><span style="color:${COLORS[k]}">●</span> ${k}</td><td class="r">${fmt(v)}</td>
+      <td><div class="barcell"><div class="bar"><div style="width:${pct(here, v)}%;background:#2563eb"></div></div><span class="r" style="width:44px">${pct(here, v)}%</span></div></td>
+      <td><div class="barcell"><div class="bar" title="寄り道回遊 ${pct(rsn, v)}%／通り抜け ${pct(w, v)}%"><div style="width:${pct(rsn, v)}%;background:#059669"></div><div style="width:${pct(w, v)}%;background:#cbd5e1"></div></div><span class="r" style="width:150px">${pct(r, v)}%（寄り道 ${pct(rsn, v)}%）</span></div></td>
+      <td class="r">${(locs / v).toFixed(2)}</td></tr>`;
+  }
+  sec.insertAdjacentHTML('beforeend', h + '</table>');
+
+  // 組み合わせ
+  sec = el('div', 'sec'); p.appendChild(sec);
+  head(sec, 'どの拠点同士が一緒に回られているか');
+  sec.appendChild(el('p', 'note', '同じ日に両方の拠点で見えた人数（期間の合計、車・スタッフ除く）。カッコ内は、どちらかで1分以上いた人。隣同士が多いのは自然なので、離れた拠点同士の数に注目。'));
+  const cv = {}, key = (a, b) => a < b ? a + '|' + b : b + '|' + a;
+  for (const r of D.covisit) if (r[0] >= S.from && r[0] <= S.to && inDt(r[0])) { const kk = key(r[1], r[2]); if (!cv[kk]) cv[kk] = [0, 0]; cv[kk][0] += r[3]; cv[kk][1] += r[4]; }
+  const nodes = selNodes(), mx = Math.max(1, ...Object.values(cv).map(x => x[0]));
+  h = '<div class="scroll"><table class="grid" style="font-size:12px"><tr><th></th>' + nodes.map(n => `<th>${n}</th>`).join('') + '</tr>';
+  for (const a of nodes) {
+    h += `<tr><th style="text-align:right">${a}</th>`;
+    for (const b of nodes) {
+      if (a === b) { h += '<td style="background:#f3f4f6;min-width:96px">—</td>'; continue; }
+      const x = cv[key(a, b)] || [0, 0], al = (0.05 + 0.9 * Math.sqrt(x[0] / mx));
+      h += `<td style="min-width:96px;height:32px;background:rgba(5,150,105,${al.toFixed(2)});color:${al > 0.5 ? '#fff' : '#111'}" title="${a}×${b}: ${fmt(x[0])}人（うち寄り道あり ${fmt(x[1])}人）">${fmt(x[0])}<br><span style="font-size:10px;opacity:.8">(${fmt(x[1])})</span></td>`;
+    }
+    h += '</tr>';
+  }
+  sec.insertAdjacentHTML('beforeend', h + '</table></div>');
+}
+
+// ---------------------------------------------------------------- ノード間移動
+function tabMoves(p) {
+  head(p, 'ノード間移動', [...dtButtons(), lbl(' '), btn('1分未満を除く', S.skip1, () => { S.skip1 = !S.skip1; render(); })]);
+  p.appendChild(el('p', 'note', '同じ端末が60分以内に別の拠点で見えたら「移動」（車・スタッフ除く）。<b>1分未満の移動</b>は、隣り合う拠点が同じ人を同時に拾っただけのことが多いので、初期状態では除いている。行＝出発、列＝到着。'));
+  const nodes = selNodes(), M = {};
+  for (const r of D.moves) {
+    if (r[0] < S.from || r[0] > S.to || !inDt(r[0])) continue;
+    const k = r[1] + '→' + r[2]; if (!M[k]) M[k] = { from: r[1], to: r[2], n: 0, n1: 0, medw: 0 };
+    M[k].n += r[3]; M[k].n1 += r[4]; M[k].medw += r[5] * r[3];
+  }
+  const val = x => x ? (S.skip1 ? x.n - x.n1 : x.n) : 0;
+  const mx = Math.max(1, ...Object.values(M).filter(x => S.sel.has(x.from) && S.sel.has(x.to)).map(val));
+  let h = '<div class="scroll"><table class="grid" style="font-size:12px"><tr><th>出発＼到着</th>' + nodes.map(n => `<th>${n}</th>`).join('') + '</tr>';
+  for (const a of nodes) {
+    h += `<tr><th style="text-align:right">${a}</th>`;
+    for (const b of nodes) {
+      if (a === b) { h += '<td style="background:#f3f4f6;min-width:90px">—</td>'; continue; }
+      const x = M[a + '→' + b], v = val(x), al = 0.05 + 0.9 * Math.sqrt(v / mx);
+      h += `<td style="min-width:90px;height:30px;background:rgba(37,99,235,${al.toFixed(2)});color:${al > 0.5 ? '#fff' : '#111'}" title="${a}→${b}: ${fmt(v)}件">${fmt(v)}</td>`;
+    }
+    h += '</tr>';
+  }
+  p.insertAdjacentHTML('beforeend', h + '</table></div>');
+
+  const sec = el('div', 'sec'); p.appendChild(sec);
+  head(sec, '多い流れ');
+  sec.appendChild(el('p', 'note', '「逆向き」との比が大きく片寄る組み合わせは、時計のずれや拾い方の違いを疑う（人の流れなら、ふつうは行きと帰りがある程度そろう）。かかった時間は日ごとの中央値の平均（目安）。'));
+  const list = Object.values(M).filter(x => S.sel.has(x.from) && S.sel.has(x.to)).sort((a, b) => val(b) - val(a)).slice(0, 12);
+  let t = '<table class="list"><tr><th>流れ</th><th class="r">件数</th><th class="r">逆向き</th><th class="r">1分未満</th><th class="r">かかった時間</th></tr>';
+  for (const x of list) {
+    const rev = val(M[x.to + '→' + x.from]);
+    t += `<tr><td><span style="color:${COLORS[x.from]}">●</span> ${x.from} → <span style="color:${COLORS[x.to]}">●</span> ${x.to}</td><td class="r"><b>${fmt(val(x))}</b></td><td class="r">${fmt(rev)}</td><td class="r">${pct(x.n1, x.n)}%</td><td class="r">${x.n ? Math.round(x.medw / x.n / 60 * 10) / 10 + '分' : '-'}</td></tr>`;
+  }
+  sec.insertAdjacentHTML('beforeend', t + '</table>');
+}
+
+// ---------------------------------------------------------------- 機器チェック
+function tabCheck(p) {
+  head(p, '拠点ごとのデータの届き方');
+  p.appendChild(el('p', 'note', '色＝その日の稼働率（30分枠のうちデータが届いた割合）。記号：▼ 10〜16時が普段の半分未満／▲ 普段の1.8倍超／☾ 夜0〜5時が普段の2倍超。普段＝同じ拠点の平日・休日別の中央値（イベント日を除く）。マウスを乗せると数字が出る。今日の分は途中なので低く出る。' +
+    '<span class="lg"><span style="background:#16a34a"></span>95%以上<span style="background:#86efac"></span>80%〜<span style="background:#fde047"></span>60%〜<span style="background:#f87171"></span>60%未満<span style="background:#e5e7eb"></span>データなし</span>'));
+  let h = '<div class="scroll"><table class="grid"><tr><th></th>';
+  for (let d = S.from; d <= S.to; d++) { const dd = new Date(T0() + d * 864e5).getUTCDate(); h += `<th style="${isOff(d) ? 'color:#2563eb;' : ''}${evName(d) ? 'background:#ffedd5' : ''}">${dd === 1 || d === S.from ? md(d) : dd}</th>`; }
+  h += '</tr>';
+  for (const k of selNodes()) {
+    h += `<tr><th style="text-align:right">${k}</th>`;
+    for (let d = S.from; d <= S.to; d++) {
+      const r = DAY[k][d], cv = r.cov / 48, f = flags(k, d);
+      const bg = r.cov === 0 ? '#e5e7eb' : cv >= 0.95 ? '#16a34a' : cv >= 0.8 ? '#86efac' : cv >= 0.6 ? '#fde047' : '#f87171';
+      const sym = (f.includes('low') ? '▼' : '') + (f.includes('high') ? '▲' : '') + (f.includes('night') ? '☾' : '');
+      const b = isOff(d) ? BASE[k].off : BASE[k].on;
+      h += `<td style="background:${bg};color:${cv >= 0.95 ? '#fff' : '#111'}" title="${k} ${mdw(d)}${evName(d) ? ' ' + evName(d) : ''}&#10;稼働率 ${Math.round(cv * 100)}%&#10;10〜16時 ${fmt(r.day)}（普段 ${b == null ? '-' : fmt(b)}）&#10;夜0〜5時 ${r.night == null ? '-' : r.night.toFixed(1)}/30分（普段 ${BASE[k].night == null ? '-' : BASE[k].night.toFixed(1)}）">${sym}</td>`;
+    }
+    h += '</tr>';
+  }
+  p.insertAdjacentHTML('beforeend', h + '</table></div>');
+}
+
+// ---------------------------------------------------------------- 描画
+function render() {
+  renderControls(); renderKpis();
+  const p = $('pane'); p.innerHTML = ''; hideTip();
+  if (!selNodes().length) { p.innerHTML = '<div class="empty">拠点を1つ以上選んでください</div>'; return; }
+  [tabSeries, tabStay, tabHeat, tabDaily, tabRoam, tabMoves, tabCheck][S.tab](p);
+}
+boot();
