@@ -14,7 +14,7 @@ const CATS = [
   { k: 'car', name: '車', desc: 'A・B・D棟で1秒以下', color: '#d1d5db' },
 ];
 const WD = '日月火水木金土';
-const TABS = ['日別トレンド', '日報', '時系列', '滞在の内訳', 'ヒートマップ', '回遊', 'ノード間移動', '機器チェック'];
+const TABS = ['日別トレンド', '日報', '時系列', '滞在の内訳', 'ヒートマップ', '回遊', 'ノード間移動', '機器チェック', '地図'];
 
 let D, NDAY, HOL, EV, NODES, DAY, BASE, AREAS;
 const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'people', dt: 'all', showOther: false, skip1: true, dayChart: 'line', rep: null };
@@ -581,11 +581,30 @@ function tabReport(p) {
   p.insertAdjacentHTML('beforeend', '<div class="rep">' + html.join('') + '</div>');
 }
 
+
+// ---------------------------------------------------------------- 地図（Visitor Flow Intelligence を埋め込む）
+// 開いたときだけ読み込み、画面の再描画では作り直さない（地図が毎回読み直しにならないように）
+const MAP_URL = 'https://takashi440.github.io/mizunoue-data-center/';
+let MAP_FRAME = null;
+function tabMap(p) {
+  head(p, '地図で見る人の流れ（Visitor Flow Intelligence）', [el('a', 'b', '全画面で開く ↗')]);
+  const a = p.querySelector('.head a'); a.href = MAP_URL; a.target = '_blank'; a.rel = 'noopener'; a.style.textDecoration = 'none';
+  p.appendChild(el('p', 'note', '拠点の円の大きさ＝人数、線＝拠点の間の流れ。時間ごとの再生や音の機能もあります（音はページ内のボタンで鳴らしたときだけ）。このタブの上の期間・エリアの選択は地図には反映されません。'));
+  // 地図は #pane の外に1つだけ置き、表示・非表示を切り替える（DOMから外すと読み込み直しになるため）
+  if (!MAP_FRAME) {
+    MAP_FRAME = document.createElement('iframe');
+    MAP_FRAME.src = MAP_URL; MAP_FRAME.className = 'mapframe'; MAP_FRAME.title = 'Visitor Flow Intelligence';
+    MAP_FRAME.allow = 'autoplay; fullscreen';
+    $('pane').after(MAP_FRAME);
+  }
+}
+
 // ---------------------------------------------------------------- 描画
 function render() {
   renderControls(); renderKpis();
   const p = $('pane'); p.innerHTML = ''; hideTip();
+  if (MAP_FRAME) MAP_FRAME.style.display = TABS[S.tab] === '地図' ? '' : 'none';
   if (!selNodes().length) { p.innerHTML = '<div class="empty">拠点を1つ以上選んでください</div>'; return; }
-  [tabDaily, tabReport, tabSeries, tabStay, tabHeat, tabRoam, tabMoves, tabCheck][S.tab](p);
+  [tabDaily, tabReport, tabSeries, tabStay, tabHeat, tabRoam, tabMoves, tabCheck, tabMap][S.tab](p);
 }
 boot();
