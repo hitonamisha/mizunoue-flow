@@ -492,20 +492,14 @@ function repBase(d, ok) {
   }
   return out;
 }
-// 朝の予報文から周辺施設の行を抜く。キーワードを含む行と、その見出しの下に続く箇条書き
+// 朝の予報文から周辺施設の行を抜く。「まちなか図書館：…」「em-campus（FOOD）：…」のように施設名で始まる行だけ。
+// 見つからない日は、施設名を含む行をそのまま（予報の書き方は日によって違うため）
 function venueLines(msg) {
-  const KW = /まちなか図書館|em-?campus|エムキャンパス|エムキャン/i;
-  const ls = msg.split('\n').map(x => x.replace(/\*\*/g, '').trim()), out = [];
-  for (let i = 0; i < ls.length; i++) {
-    if (!KW.test(ls[i])) continue;
-    const isHead = !/^[・\-•]/.test(ls[i]) && ls[i].length < 30 && !/[。：:]/.test(ls[i]);
-    if (!isHead) { out.push(ls[i].replace(/^[・\-•]\s*/, '')); continue; }
-    let j = i + 1;
-    for (; j < ls.length && ls[j] && /^[・\-•]/.test(ls[j]); j++) out.push(ls[j].replace(/^[・\-•]\s*/, ''));
-    if (j === i + 1) out.push(ls[i]);
-    i = j - 1;
-  }
-  return [...new Set(out)].filter(x => x.length > 3).slice(0, 8);
+  const KW = /まちなか図書館|em-?campus|エムキャンパス/i;
+  const ls = msg.split('\n').map(x => x.replace(/\*\*/g, '').replace(/^[\s・\-•]+/, '').trim()).filter(Boolean);
+  const head = ls.filter(x => { const m = x.match(KW); return m && m.index <= 3 && x.length < 200; });
+  const out = head.length ? head : ls.filter(x => KW.test(x) && x.length < 120);
+  return [...new Set(out)].slice(0, 6);
 }
 function tabReport(p) {
   const last = NDAY - 1;
