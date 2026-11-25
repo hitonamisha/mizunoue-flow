@@ -14,10 +14,10 @@ const CATS = [
   { k: 'car', name: '車', desc: 'A・B・D棟で1秒以下', color: '#d1d5db' },
 ];
 const WD = '日月火水木金土';
-const TABS = ['日別トレンド', '日報', '時系列', '滞在の内訳', 'ヒートマップ', '回遊', 'ノード間移動', '機器チェック', '地図'];
+const TABS = ['日別トレンド', '日報', '時系列', '滞在の内訳', 'ヒートマップ', '回遊', 'ノード間移動', '機器チェック', '拠点マップ', '地図'];
 
 let D, NDAY, HOL, EV, NODES, DAY, BASE, AREAS;
-const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'people', dt: 'all', showOther: false, skip1: true, dayChart: 'line', rep: null };
+const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'people', dt: 'all', showOther: false, skip1: true, dayChart: 'line', rep: null, bm: 'vis', flow: true, mapView: null };
 const $ = id => document.getElementById(id);
 const tip = $('tip');
 
@@ -582,6 +582,65 @@ function tabReport(p) {
 }
 
 
+
+// ---------------------------------------------------------------- 拠点マップ（緯度経度のバブル。期間・拠点・平日/土日の選択に連動）
+let LEAF = null;
+function loadLeaflet() {
+  if (LEAF) return LEAF;
+  LEAF = new Promise((ok, ng) => {
+    const c = document.createElement('link'); c.rel = 'stylesheet'; c.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css'; document.head.appendChild(c);
+    const j = document.createElement('script'); j.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js'; j.onload = ok; j.onerror = ng; document.head.appendChild(j);
+  });
+  return LEAF;
+}
+function tabBubble(p) {
+  const M = [['vis', '来た人'], ['stay', '立ち寄り'], ['rate', '立ち寄り率']];
+  head(p, '拠点マップ', [...dtButtons(), lbl(' 大きさ:'), ...M.map(([k, l]) => btn(l, S.bm === k, () => { S.bm = k; render(); })), lbl(' '), btn('移動の線', S.flow, () => { S.flow = !S.flow; render(); })]);
+  const L0 = D.locs || {}, nodes = selNodes().filter(k => L0[k]);
+  const miss = selNodes().filter(k => !L0[k]);
+  p.appendChild(el('p', 'note', '円の大きさ＝選んだ期間の1日平均（立ち寄り率のときは率）。線＝ノード間移動（1分未満を除く・両方向の合計）で、太いほど多い。円や線にマウスを乗せると数字が出ます。' +
+    (miss.length ? '<br>位置が登録されていない拠点：' + miss.join('、') + '（BigQuery の device_locations に緯度経度を足すと出ます）' : '')));
+  if (!Object.keys(L0).length) { p.appendChild(el('div', 'empty', '拠点の位置データがまだありません（次の集計から入ります）')); return; }
+  const box = el('div', 'bubblemap'); p.appendChild(box);
+  const days = rangeDays().filter(inDt), nd = Math.max(1, days.length);
+  const val = {};
+  for (const k of nodes) {
+    let t = 0, st = 0; for (const d of days) { const c = D.catDay[k]; t += c.pass[d] + c.stop[d] + c.long[d]; st += c.stop[d] + c.long[d]; }
+    val[k] = { vis: t / nd, stay: st / nd, rate: t ? st / t * 100 : 0 };
+  }
+  const mx = Math.max(1e-9, ...nodes.map(k => val[k][S.bm]));
+  loadLeaflet().then(() => {
+    if (!box.isConnected) return;
+    const L = window.L;
+    const map = L.map(box, { scrollWheelZoom: false });
+    // CARTOの無料タイルは鍵が要るようになった（2026-09）ので OpenStreetMap を薄くして使う
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, className: 'bm-tiles', attribution: '© OpenStreetMap contributors' }).addTo(map);
+    if (S.mapView) map.setView(S.mapView[0], S.mapView[1]); else map.fitBounds(nodes.map(k => L0[k]), { padding: [60, 60], maxZoom: 18 });
+    map.on('moveend', () => { S.mapView = [map.getCenter(), map.getZoom()]; });
+    if (S.flow) {
+      const F = {};
+      for (const r of D.moves) {
+        if (r[0] < S.from || r[0] > S.to || !inDt(r[0]) || !L0[r[1]] || !L0[r[2]] || !S.sel.has(r[1]) || !S.sel.has(r[2])) continue;
+        const key = [r[1], r[2]].sort().join('|'); F[key] = F[key] || { a: 0, b: 0 };
+        F[key][r[1] < r[2] ? 'a' : 'b'] += r[3] - r[4];
+      }
+      const fm = Math.max(1, ...Object.values(F).map(x => x.a + x.b));
+      Object.entries(F).sort((x, y) => (x[1].a + x[1].b) - (y[1].a + y[1].b)).forEach(([key, x]) => {
+        const [a, b] = key.split('|'), n = x.a + x.b; if (!n) return;
+        L.polyline([L0[a], L0[b]], { color: '#475569', weight: 1 + 11 * n / fm, opacity: 0.25 + 0.45 * n / fm })
+          .bindTooltip(`${a}→${b}：${fmt(x.a / nd)}人/日<br>${b}→${a}：${fmt(x.b / nd)}人/日`, { sticky: true }).addTo(map);
+      });
+    }
+    for (const k of nodes) {
+      const v = val[k], r = 8 + 42 * Math.sqrt(v[S.bm] / mx);
+      L.circleMarker(L0[k], { radius: r, color: '#fff', weight: 2, fillColor: COLORS[k], fillOpacity: 0.72 })
+        .bindTooltip(`<b>${k}</b><br>来た人 ${fmt(v.vis)}人/日<br>立ち寄り ${fmt(v.stay)}人/日（${v.rate.toFixed(1)}%）`, { direction: 'top' })
+        .addTo(map);
+      L.marker(L0[k], { icon: L.divIcon({ className: 'bm-label', html: `<span>${k}<br><b>${S.bm === 'rate' ? v.rate.toFixed(1) + '%' : fmt(v[S.bm])}</b></span>`, iconSize: [0, 0] }), interactive: false }).addTo(map);
+    }
+  }).catch(() => { box.innerHTML = '<div class="err">地図の部品を読み込めませんでした</div>'; });
+}
+
 // ---------------------------------------------------------------- 地図（Visitor Flow Intelligence を埋め込む）
 // 開いたときだけ読み込み、画面の再描画では作り直さない（地図が毎回読み直しにならないように）
 const MAP_URL = 'https://takashi440.github.io/mizunoue-data-center/';
@@ -605,6 +664,6 @@ function render() {
   const p = $('pane'); p.innerHTML = ''; hideTip();
   if (MAP_FRAME) MAP_FRAME.style.display = TABS[S.tab] === '地図' ? '' : 'none';
   if (!selNodes().length) { p.innerHTML = '<div class="empty">拠点を1つ以上選んでください</div>'; return; }
-  [tabDaily, tabReport, tabSeries, tabStay, tabHeat, tabRoam, tabMoves, tabCheck, tabMap][S.tab](p);
+  [tabDaily, tabReport, tabSeries, tabStay, tabHeat, tabRoam, tabMoves, tabCheck, tabBubble, tabMap][S.tab](p);
 }
 boot();
