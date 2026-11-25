@@ -14,10 +14,10 @@ const CATS = [
   { k: 'car', name: '車', desc: 'A・B・D棟で1秒以下', color: '#d1d5db' },
 ];
 const WD = '日月火水木金土';
-const TABS = ['日別トレンド', '時系列', '滞在の内訳', 'ヒートマップ', '回遊', 'ノード間移動', '機器チェック'];
+const TABS = ['日別トレンド', '日報', '時系列', '滞在の内訳', 'ヒートマップ', '回遊', 'ノード間移動', '機器チェック'];
 
 let D, NDAY, HOL, EV, NODES, DAY, BASE, AREAS;
-const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'people', dt: 'all', showOther: false, skip1: true, dayChart: 'line' };
+const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'people', dt: 'all', showOther: false, skip1: true, dayChart: 'line', rep: null };
 const $ = id => document.getElementById(id);
 const tip = $('tip');
 
@@ -476,11 +476,103 @@ function tabCheck(p) {
   p.insertAdjacentHTML('beforeend', h + '</table></div>');
 }
 
+
+// ---------------------------------------------------------------- 日報
+const WMO = c => c == null ? '' : c === 0 ? '快晴' : c <= 2 ? '晴れ' : c === 3 ? 'くもり' : c <= 48 ? '霧' : c <= 57 ? '霧雨' : c <= 67 ? '雨' : c <= 77 ? '雪' : c <= 82 ? 'にわか雨' : c <= 86 ? 'にわか雪' : '雷雨';
+const WICON = c => c == null ? '' : c <= 1 ? '☀️' : c <= 3 ? '⛅' : c <= 48 ? '🌫' : c <= 67 ? '☔' : c <= 77 ? '❄️' : c <= 82 ? '🌦' : c <= 86 ? '❄️' : '⛈';
+const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const sgn = x => (x >= 0 ? '+' : '−') + Math.abs(Math.round(x)) + '%';
+
+// 比べる相手：平日は同じ曜日、土日祝は土日祝。イベント日・データが欠けた日・今日は除いて直近4日
+function repBase(d, ok) {
+  const off = isOff(d), out = [];
+  for (let j = d - 1; j >= 0 && out.length < 4; j--) {
+    if (evName(j) || !ok(j)) continue;
+    if (off ? isOff(j) : (!isOff(j) && dow(j) === dow(d))) out.push(j);
+  }
+  return out;
+}
+function tabReport(p) {
+  const last = NDAY - 1;
+  if (S.rep == null || S.repTo !== S.to || S.rep > last) { S.rep = Math.min(S.to, last); S.repTo = S.to; }  // 期間を変えたら最後の日に合わせる
+  const d = S.rep, nodes = selNodes(), C = D.ctx || {};
+  const c = [btn('◀ 前の日', false, () => { S.rep = Math.max(0, d - 1); render(); }), btn('次の日 ▶', false, () => { S.rep = Math.min(last, d + 1); render(); })];
+  const cp = btn('文章をコピー', false, () => { navigator.clipboard.writeText(text.join('\n')).then(() => { cp.textContent = 'コピーしました'; }); });
+  c.push(cp);
+  head(p, '日報　' + mdw(d) + (d === last ? '（今日・' + D.generated.slice(11, 16) + 'まで）' : ''), c);
+
+  const R = roamRows(), sum = (j, col) => R.reduce((a, r) => a + (r[0] === j ? r[col] : 0), 0);
+  // 全体の比較：どの拠点も0枠ではなく、全体で85%以上届いた日。拠点ごとの比較：その拠点が38枠以上届いた日
+  const full = j => nodes.every(k => DAY[k][j].cov > 0) && nodes.reduce((a, k) => a + DAY[k][j].cov, 0) >= nodes.length * 48 * 0.85;
+  const base = repBase(d, j => full(j) && j < last);
+  const avgOf = (b, f) => b.length ? b.reduce((a, j) => a + f(j), 0) / b.length : null;
+  const avg = f => avgOf(base, f);
+  const vis = sum(d, 2), roam = sum(d, 3), walk = sum(d, 5), stopR = sum(d, 6), bv = avg(j => sum(j, 2));
+  const tot = (k, j) => D.catDay[k].pass[j] + D.catDay[k].stop[j] + D.catDay[k].long[j];
+  const stay = (k, j) => D.catDay[k].stop[j] + D.catDay[k].long[j];
+  const allT = nodes.reduce((a, k) => a + tot(k, d), 0), allS = nodes.reduce((a, k) => a + stay(k, d), 0);
+  let pk = -1, pv = -1; for (let h = 0; h < 24; h++) { const v = R.reduce((a, r) => a + (r[0] === d && r[1] === h ? r[2] : 0), 0); if (v > pv) { pv = v; pk = h; } }
+  const tag = [isOff(d) ? (HOL.has(dayStr(d)) ? '祝日' : '休日') : '平日', !isOff(d) && d > 0 && HOL.has(dayStr(d - 1)) ? '祝日明け' : '', evName(d)].filter(Boolean).join('・');
+  const cmpWord = isOff(d) ? '最近の土日祝' : '同じ曜日';
+  const text = [], html = [];
+  const line = (h, t) => { html.push(h); text.push(t == null ? h.replace(/<[^>]+>/g, '') : t); };
+
+  text.push('【水上ビル 人流日報】' + mdw(d) + '（' + tag + '）' + (curArea() !== 'all' ? '　' + areaLabel() : ''));
+  // 天気
+  const w = (C.weather || {})[d];
+  const wTxt = w ? `${WICON(w[5])} ${WMO(w[5])}　最高 ${w[0]}℃／最低 ${w[1]}℃` + (w[2] > 0 ? `　雨 ${w[2]}mm（${w[3]}時間）` : '　雨なし') + (w[4] != null ? `　風 最大${w[4]}m/s` : '') : '天気データなし';
+  // 人流
+  const diff = bv ? (vis / bv - 1) * 100 : null;
+  html.push('<div class="rep-lead"><div class="rep-num">' + fmt(vis) + '<span>人</span></div><div>' +
+    (diff == null ? '比べる日がありません' : `${cmpWord}の平均（${fmt(bv)}人）より <b class="${diff >= 0 ? 'up' : 'down'}">${sgn(diff)}</b>`) +
+    `<div class="note" style="margin:2px 0 0">${tag}　${wTxt}</div></div></div>`);
+  text.push('天気：' + wTxt.replace(/^\S+ /, ''));
+  text.push('来た人：' + fmt(vis) + '人' + (diff == null ? '' : `（${cmpWord}の平均${fmt(bv)}人より${sgn(diff)}）`));
+
+  const ul = [];
+  const li = (h, t) => { ul.push('<li>' + h + '</li>'); text.push('・' + (t || h.replace(/<[^>]+>/g, ''))); };
+  li(`来た人がいちばん多かった時間：<b>${pk}時</b>（${fmt(pv)}人）`);
+  li(`立ち寄り率：<b>${pct(allS, allT)}%</b>（1分以上いた人の割合）`);
+  li(`回遊：<b>${fmt(roam)}人（${pct(roam, vis)}%）</b>　うち通り抜け ${fmt(walk)}人・寄り道回遊 ${fmt(stopR)}人`);
+  // 拠点ごとの増減（平均との差が大きい順に）
+  const rows = nodes.map(k => { const b = avgOf(repBase(d, j => DAY[k][j].cov >= 38 && j < last), j => tot(k, j)); return { k, v: tot(k, d), b, r: b ? (tot(k, d) / b - 1) * 100 : null, cov: DAY[k][d].cov }; });
+  const big = rows.filter(x => x.r != null && Math.abs(x.r) >= 25 && x.cov >= 38).sort((a, b) => Math.abs(b.r) - Math.abs(a.r));
+  if (big.length) li('目立った拠点：' + big.slice(0, 3).map(x => `${x.k} <b class="${x.r >= 0 ? 'up' : 'down'}">${sgn(x.r)}</b>`).join('、'));
+  const gaps = rows.filter(x => x.cov < 38);
+  if (gaps.length) li('⚠️ データの欠け：' + gaps.map(x => `${x.k}（48枠中${x.cov}枠）`).join('、') + ' → この拠点の数字は少なめに出ています');
+  html.push('<ul class="rep-ul">' + ul.join('') + '</ul>');
+
+  // イベント・店・メンテ
+  const sec = (title, items) => { if (!items.length) return; html.push(`<div class="rep-sec"><b>${title}</b><ul class="rep-ul">${items.map(x => '<li>' + x + '</li>').join('')}</ul></div>`); text.push(title); items.forEach(x => text.push('・' + x.replace(/<[^>]+>/g, ''))); };
+  const evs = ((C.events || {})[d] || []).map(e => esc(e.t) + (e.loc ? '（' + esc(e.loc) + '）' : '') + (e.h ? ' ' + esc(e.h) : '') + (e.note ? '　<span class="note">' + esc(e.note) + '</span>' : ''));
+  if (evName(d) && !evs.some(x => x.includes(evName(d)))) evs.unshift(esc(evName(d)));
+  sec('📅 イベント', evs);
+  const sh = (C.shop || {})[d] || [];
+  const shTxt = e => `<b>${esc(e.shop)}</b>：${esc(e.title)}${e.time ? ' ' + esc(e.time) : ''}`;
+  sec('🏢 水上ビルのお店のイベント', sh.filter(e => e.scope === '水上ビル内' && e.kind !== '臨時休業').map(shTxt));
+  sec('🚚 お出かけ先のお店', sh.filter(e => e.scope === '水上ビル外').map(e => shTxt(e) + (e.open ? '（お店は' + esc(e.open) + '）' : '')));
+  sec('🔒 お休み・短縮', sh.filter(e => e.open === '休業' || e.open === '短縮').map(e => `<b>${esc(e.shop)}</b>：${esc(e.open)}${e.title ? '（' + esc(e.title) + '）' : ''}`));
+  sec('🔧 機器のメンテ', ((C.maint || {})[d] || []).map(esc));
+
+  // 拠点の表
+  let t = '<div class="rep-sec"><b>拠点ごと</b><table class="list"><tr><th>拠点</th><th class="r">来た人</th><th class="r">' + cmpWord + 'の平均</th><th class="r">差</th><th class="r">立ち寄り率</th><th class="r">データ</th></tr>';
+  for (const x of rows) t += `<tr><td><span class="dot" style="background:${COLORS[x.k]}"></span>${x.k}</td><td class="r">${fmt(x.v)}</td><td class="r">${x.b == null ? '-' : fmt(x.b)}</td><td class="r ${x.r == null ? '' : x.r >= 0 ? 'up' : 'down'}">${x.r == null ? '-' : sgn(x.r)}</td><td class="r">${pct(stay(x.k, d), x.v)}%</td><td class="r">${x.cov < 38 ? '⚠️ ' : ''}${Math.round(x.cov / 48 * 100)}%</td></tr>`;
+  html.push(t + '</table><p class="note">拠点ごとの「来た人」は素通り＋立ち寄り＋長居（車・スタッフを除く）。拠点をまたぐ重複は除いていないので、合計は上の来た人より多くなります。全体で比べた日：' + (base.length ? base.map(mdw).join('、') : 'なし') + '（拠点ごとの平均は、その拠点のデータがそろった日で計算）</p></div>');
+
+  // 朝の予報
+  const pr = (C.pred || {})[d];
+  if (pr && (pr[0] || pr[1])) html.push('<details class="rep-sec"><summary><b>☀️ この日の朝のひと気予報</b>（ひと気予報Botの投稿）</summary>' +
+    (pr[0] ? '<pre class="rep-pre">' + esc(pr[0]) + '</pre>' : '') + (pr[1] ? '<b class="note">開店案内・お店イベント</b><pre class="rep-pre">' + esc(pr[1]) + '</pre>' : '') + '</details>');
+  if (!D.ctx) html.push('<p class="note">天気・イベント・お店の情報は、次の集計（6時・12時・18時）から載ります。</p>');
+
+  p.insertAdjacentHTML('beforeend', '<div class="rep">' + html.join('') + '</div>');
+}
+
 // ---------------------------------------------------------------- 描画
 function render() {
   renderControls(); renderKpis();
   const p = $('pane'); p.innerHTML = ''; hideTip();
   if (!selNodes().length) { p.innerHTML = '<div class="empty">拠点を1つ以上選んでください</div>'; return; }
-  [tabDaily, tabSeries, tabStay, tabHeat, tabRoam, tabMoves, tabCheck][S.tab](p);
+  [tabDaily, tabReport, tabSeries, tabStay, tabHeat, tabRoam, tabMoves, tabCheck][S.tab](p);
 }
 boot();
