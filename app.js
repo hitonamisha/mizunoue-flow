@@ -43,7 +43,7 @@ async function boot() {
     if (D.error) throw new Error(D.error);
   } catch (e) {
     $('updated').textContent = '';
-    $('pane').innerHTML = '<div class="err">' + e.message + '</div>';
+    $('pane').innerHTML = ''; $('pane').appendChild(el('div', 'err')).textContent = e.message;
     return;
   }
   NDAY = D.days;
@@ -581,7 +581,7 @@ function tabReport(p) {
   sec('📅 イベント', evs);
   const sh = (C.shop || {})[d] || [];
   const shTxt = e => `<b>${esc(e.shop)}</b>${e.scope === '水上ビル外' && e.venue ? '＠' + esc(e.venue) : ''}：${esc(e.title)}${e.time ? ' ' + esc(e.time) : ''}` +
-    (e.sum ? `<br><span class="note">${esc(e.sum)}</span>` : '') + (e.url ? ` <a href="${esc(e.url)}" target="_blank" rel="noopener" class="note">Instagram</a>` : '');
+    (e.sum ? `<br><span class="note">${esc(e.sum)}</span>` : '') + (/^https:\/\//i.test(e.url || '') ? ` <a href="${esc(e.url)}" target="_blank" rel="noopener" class="note">Instagram</a>` : '');
   sec('🏢 水上ビルのお店のイベント', sh.filter(e => e.scope === '水上ビル内' && e.kind !== '臨時休業').map(shTxt));
   sec('🚚 お出かけ先のお店', sh.filter(e => e.scope === '水上ビル外').map(e => shTxt(e) + (e.open ? '（お店は' + esc(e.open) + '）' : '')));
   // 周辺施設（まちなか図書館・em-campus）：朝のひと気予報の文中から、その段落を抜き出す
@@ -611,8 +611,8 @@ let LEAF = null;
 function loadLeaflet() {
   if (LEAF) return LEAF;
   LEAF = new Promise((ok, ng) => {
-    const c = document.createElement('link'); c.rel = 'stylesheet'; c.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css'; document.head.appendChild(c);
-    const j = document.createElement('script'); j.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js'; j.onload = ok; j.onerror = ng; document.head.appendChild(j);
+    const c = document.createElement('link'); c.rel = 'stylesheet'; c.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css'; c.integrity = 'sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw=='; c.crossOrigin = 'anonymous'; c.referrerPolicy = 'no-referrer'; document.head.appendChild(c);
+    const j = document.createElement('script'); j.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js'; j.integrity = 'sha512-puJW3E/qXDqYp9IfhAI54BJEaWIfloJ7JWs7OeD5i6ruC9JZL1gERT1wjtwXFlh7CjE7ZJ+/vcRZRkIYIb6p4g=='; j.crossOrigin = 'anonymous'; j.referrerPolicy = 'no-referrer'; j.onload = ok; j.onerror = ng; document.head.appendChild(j);
   });
   return LEAF;
 }
