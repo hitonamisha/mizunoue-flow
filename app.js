@@ -492,6 +492,21 @@ function repBase(d, ok) {
   }
   return out;
 }
+// 朝の予報文から周辺施設の行を抜く。キーワードを含む行と、その見出しの下に続く箇条書き
+function venueLines(msg) {
+  const KW = /まちなか図書館|em-?campus|エムキャンパス|エムキャン/i;
+  const ls = msg.split('\n').map(x => x.replace(/\*\*/g, '').trim()), out = [];
+  for (let i = 0; i < ls.length; i++) {
+    if (!KW.test(ls[i])) continue;
+    const isHead = !/^[・\-•]/.test(ls[i]) && ls[i].length < 30 && !/[。：:]/.test(ls[i]);
+    if (!isHead) { out.push(ls[i].replace(/^[・\-•]\s*/, '')); continue; }
+    let j = i + 1;
+    for (; j < ls.length && ls[j] && /^[・\-•]/.test(ls[j]); j++) out.push(ls[j].replace(/^[・\-•]\s*/, ''));
+    if (j === i + 1) out.push(ls[i]);
+    i = j - 1;
+  }
+  return [...new Set(out)].filter(x => x.length > 3).slice(0, 8);
+}
 function tabReport(p) {
   const last = NDAY - 1;
   if (S.rep == null || S.repTo !== S.to || S.rep > last) { S.rep = Math.min(S.to, last); S.repTo = S.to; }  // 期間を変えたら最後の日に合わせる
@@ -548,9 +563,13 @@ function tabReport(p) {
   if (evName(d) && !evs.some(x => x.includes(evName(d)))) evs.unshift(esc(evName(d)));
   sec('📅 イベント', evs);
   const sh = (C.shop || {})[d] || [];
-  const shTxt = e => `<b>${esc(e.shop)}</b>：${esc(e.title)}${e.time ? ' ' + esc(e.time) : ''}`;
+  const shTxt = e => `<b>${esc(e.shop)}</b>${e.scope === '水上ビル外' && e.venue ? '＠' + esc(e.venue) : ''}：${esc(e.title)}${e.time ? ' ' + esc(e.time) : ''}` +
+    (e.sum ? `<br><span class="note">${esc(e.sum)}</span>` : '') + (e.url ? ` <a href="${esc(e.url)}" target="_blank" rel="noopener" class="note">Instagram</a>` : '');
   sec('🏢 水上ビルのお店のイベント', sh.filter(e => e.scope === '水上ビル内' && e.kind !== '臨時休業').map(shTxt));
   sec('🚚 お出かけ先のお店', sh.filter(e => e.scope === '水上ビル外').map(e => shTxt(e) + (e.open ? '（お店は' + esc(e.open) + '）' : '')));
+  // 周辺施設（まちなか図書館・em-campus）：朝のひと気予報の文中から、その段落を抜き出す
+  const pr0 = ((C.pred || {})[d] || [])[0] || '';
+  sec('🏛 周辺施設（まちなか図書館・em-campus）', venueLines(pr0).map(esc));
   sec('🔒 お休み・短縮', sh.filter(e => e.open === '休業' || e.open === '短縮').map(e => `<b>${esc(e.shop)}</b>：${esc(e.open)}${e.title ? '（' + esc(e.title) + '）' : ''}`));
   sec('🔧 機器のメンテ', ((C.maint || {})[d] || []).map(esc));
 
