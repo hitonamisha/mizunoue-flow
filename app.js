@@ -17,7 +17,7 @@ const WD = '日月火水木金土';
 const TABS = ['日別トレンド', '日報', '時系列', '滞在の内訳', 'ヒートマップ', '回遊', 'ノード間移動', '機器チェック', '拠点マップ', '地図'];
 
 let D, NDAY, HOL, EV, NODES, DAY, BASE, AREAS;
-const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'people', dt: 'all', showOther: false, skip1: true, dayChart: 'line', rep: null, bm: 'vis', flow: true, mapView: null };
+const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'people', dt: 'all', showOther: false, skip1: true, dayChart: 'line', rep: null, bm: 'vis', flow: true, mapView: null, agg: 'avg' };
 const $ = id => document.getElementById(id);
 const tip = $('tip');
 
@@ -132,6 +132,9 @@ function renderControls() {
     q.appendChild(btn(l, S.to === last && S.to - S.from + 1 === n, () => { S.to = last; S.from = Math.max(0, last - n + 1); render(); }));
   }
   q.appendChild(btn('今日（' + D.generated.slice(11, 16) + 'まで）', S.from === NDAY - 1 && S.to === NDAY - 1, () => { S.from = S.to = NDAY - 1; render(); }));
+  const ag = $('agg'); ag.innerHTML = '';
+  ag.appendChild(btn('1日平均', S.agg === 'avg', () => { S.agg = 'avg'; render(); }));
+  ag.appendChild(btn('延べ（期間の合計）', S.agg === 'sum', () => { S.agg = 'sum'; render(); }));
   for (const id of ['from', 'to']) { $(id).min = dayStr(0); $(id).max = dayStr(NDAY - 1); }
   $('from').value = dayStr(S.from); $('to').value = dayStr(S.to);
   const ar = $('areas'); ar.innerHTML = '';
@@ -156,7 +159,7 @@ function renderKpis() {
   for (const k of nodes) for (const d of days) { pass += D.catDay[k].pass[d]; stay += D.catDay[k].stop[d] + D.catDay[k].long[d]; }
   let cov = 0; for (const k of nodes) for (const d of days) cov += DAY[k][d].cov;
   const cards = [
-    ['来た人（1日平均）', fmt(v / days.length), areaLabel() + '・車とスタッフを除く'],
+    S.agg === 'sum' ? ['来た人（延べ・' + days.length + '日間）', fmt(v), areaLabel() + '・1日ごとの人数の合計（毎日来る人は日数分）'] : ['来た人（1日平均）', fmt(v / days.length), areaLabel() + '・車とスタッフを除く'],
     ['立ち寄り率', pct(stay, pass + stay) + '%', '選んだ拠点で1分以上いた人の割合'],
     ['寄り道回遊率', pct(rs, v) + '%', areaLabel() + 'の中で2か所以上・どこかで1分以上'],
     ['稼働率', nodes.length ? Math.round(cov / (nodes.length * days.length * 48) * 100) + '%' : '-', '30分枠のうちデータが届いた割合'],
@@ -332,7 +335,27 @@ function tabHeat(p) {
 }
 
 // ---------------------------------------------------------------- 日別トレンド
-function tabDaily(p) {
+function tabDaily(p) { tabDailyChart(p); monthlyTable(p); }
+// 月別（たくわえの全期間。公開データの90日より前も含む）。延べ／1日平均を上の切り替えに合わせる
+function monthlyTable(p) {
+  const MO = D.monthly; if (!MO || !Object.keys(MO).length) return;
+  const a = curArea(), nodes = selNodes(), sum = S.agg === 'sum';
+  const yms = Object.keys(MO).sort(), cur = D.generated.slice(0, 7);
+  const sec = el('div', 'sec'); p.appendChild(sec);
+  head(sec, '月別　' + (sum ? '延べ人数' : '1日平均') + '（' + areaLabel().replace(/（.*）/, '') + '）', [btn('1日平均', !sum, () => { S.agg = 'avg'; render(); }), btn('延べ', sum, () => { S.agg = 'sum'; render(); })]);
+  sec.appendChild(el('p', 'note', '9月1日からの全期間（上の期間の選択には連動しません）。延べ＝その日に来た人（重複を除く）を日数分足した数で、毎日来る人は日数分数えます。データが欠けた時間の分は補っていないので、そのぶん少なめです。立ち寄り率とデータの届いた割合は、選んだ拠点で計算。'));
+  let h = '<div class="scroll"><table class="list"><tr><th>月</th><th class="r">日数</th><th class="r">来た人' + (sum ? '（延べ）' : '（1日平均）') + '</th><th class="r">立ち寄り率</th><th class="r">データの届いた割合</th></tr>';
+  let tv = 0, td = 0, tt = 0, ts = 0, tc = 0;
+  for (const ym of yms) {
+    const m = MO[ym], v = a === 'all' ? m.vis : (m.area[a] || 0);
+    let t = 0, st = 0, cv = 0; for (const k of nodes) { const n = m.node[k]; if (n) { t += n[0]; st += n[1]; cv += n[2]; } }
+    tv += v; td += m.days; tt += t; ts += st; tc += cv;
+    h += `<tr><td>${+ym.slice(0, 4)}年${+ym.slice(5)}月${ym === cur ? '（途中）' : ''}</td><td class="r">${m.days}</td><td class="r"><b>${fmt(sum ? v : v / m.days)}</b></td><td class="r">${pct(st, t)}%</td><td class="r">${nodes.length ? Math.round(cv / (nodes.length * m.days * 48) * 100) : '-'}%</td></tr>`;
+  }
+  h += `<tr class="total"><td>9月からの累計</td><td class="r">${td}</td><td class="r"><b>${fmt(sum ? tv : tv / td)}</b></td><td class="r">${pct(ts, tt)}%</td><td class="r">${nodes.length ? Math.round(tc / (nodes.length * td * 48) * 100) : '-'}%</td></tr>`;
+  sec.insertAdjacentHTML('beforeend', h + '</table></div>');
+}
+function tabDailyChart(p) {
   head(p, '日ごとの推移', [btn('折れ線', S.dayChart === 'line', () => { S.dayChart = 'line'; render(); }), btn('積み上げ', S.dayChart === 'stack', () => { S.dayChart = 'stack'; S.dayMode = 'people'; render(); }), lbl(' '), btn('10〜16時', S.dayMode === 'day', () => { S.dayMode = 'day'; render(); }), btn('一日中', S.dayMode === 'all', () => { S.dayMode = 'all'; render(); }), btn('夜0〜5時', S.dayMode === 'night', () => { S.dayMode = 'night'; render(); }), btn('来た人（分類後）', S.dayMode === 'people', () => { S.dayMode = 'people'; render(); })]);
   p.appendChild(el('p', 'note', (S.dayMode === 'people' ? 'その日その拠点で見えた来た人（素通り＋立ち寄り＋長居。車・スタッフを除く）。' : S.dayMode === 'night' ? '夜0〜5時の30分あたりの平均端末数。置きっぱなしの機器や夜の人通りを見る用。' : '30分ごとのユニーク数を足したもの（同じ人が長くいると重ねて数える）。増減や段差を見る用。') + BAND_NOTE));
   const days = rangeDays(), n = days.length;
@@ -598,7 +621,7 @@ function tabBubble(p) {
   head(p, '拠点マップ', [...dtButtons(), lbl(' 大きさ:'), ...M.map(([k, l]) => btn(l, S.bm === k, () => { S.bm = k; render(); })), lbl(' '), btn('移動の線', S.flow, () => { S.flow = !S.flow; render(); })]);
   const L0 = D.locs || {}, nodes = selNodes().filter(k => L0[k]);
   const miss = selNodes().filter(k => !L0[k]);
-  p.appendChild(el('p', 'note', '円の大きさ＝選んだ期間の1日平均（立ち寄り率のときは率）。線＝ノード間移動（1分未満を除く・両方向の合計）で、太いほど多い。円や線にマウスを乗せると数字が出ます。' +
+  p.appendChild(el('p', 'note', (S.agg === 'sum' ? '円の大きさ＝選んだ期間の延べ人数' : '円の大きさ＝選んだ期間の1日平均') + '（立ち寄り率のときは率）。線＝ノード間移動（1分未満を除く・両方向の合計）で、太いほど多い。円や線にマウスを乗せると数字が出ます。' +
     (miss.length ? '<br>位置が登録されていない拠点：' + miss.join('、') + '（BigQuery の device_locations に緯度経度を足すと出ます）' : '')));
   if (!Object.keys(L0).length) { p.appendChild(el('div', 'empty', '拠点の位置データがまだありません（次の集計から入ります）')); return; }
   const box = el('div', 'bubblemap'); p.appendChild(box);
@@ -606,7 +629,8 @@ function tabBubble(p) {
   const val = {};
   for (const k of nodes) {
     let t = 0, st = 0; for (const d of days) { const c = D.catDay[k]; t += c.pass[d] + c.stop[d] + c.long[d]; st += c.stop[d] + c.long[d]; }
-    val[k] = { vis: t / nd, stay: st / nd, rate: t ? st / t * 100 : 0 };
+    const dv = S.agg === 'sum' ? 1 : nd;
+    val[k] = { vis: t / dv, stay: st / dv, rate: t ? st / t * 100 : 0 };
   }
   const mx = Math.max(1e-9, ...nodes.map(k => val[k][S.bm]));
   loadLeaflet().then(() => {
@@ -634,7 +658,7 @@ function tabBubble(p) {
     for (const k of nodes) {
       const v = val[k], r = 8 + 42 * Math.sqrt(v[S.bm] / mx);
       L.circleMarker(L0[k], { radius: r, color: '#fff', weight: 2, fillColor: COLORS[k], fillOpacity: 0.72 })
-        .bindTooltip(`<b>${k}</b><br>来た人 ${fmt(v.vis)}人/日<br>立ち寄り ${fmt(v.stay)}人/日（${v.rate.toFixed(1)}%）`, { direction: 'top' })
+        .bindTooltip(`<b>${k}</b><br>来た人 ${fmt(v.vis)}人${S.agg === 'sum' ? '（延べ）' : '/日'}<br>立ち寄り ${fmt(v.stay)}人${S.agg === 'sum' ? '' : '/日'}（${v.rate.toFixed(1)}%）`, { direction: 'top' })
         .addTo(map);
       L.marker(L0[k], { icon: L.divIcon({ className: 'bm-label', html: `<span>${k}<br><b>${S.bm === 'rate' ? v.rate.toFixed(1) + '%' : fmt(v[S.bm])}</b></span>`, iconSize: [0, 0] }), interactive: false }).addTo(map);
     }

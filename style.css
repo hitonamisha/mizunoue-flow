@@ -60,3 +60,4 @@ footer{color:#9ca3af;font-size:12px;text-align:center;padding:10px 0 30px}
 .bm-label span{position:absolute;transform:translate(-50%,-50%);white-space:nowrap;text-align:center;font-size:11px;line-height:1.25;color:#111827;text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff;pointer-events:none}
 .bm-label b{font-size:13px}
 .bm-tiles{filter:grayscale(1) contrast(.85) brightness(1.08)}
+table.list tr.total td{border-top:2px solid #d1d5db;font-weight:600;background:#f9fafb}
