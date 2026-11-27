@@ -9,8 +9,8 @@ const EXTRA = ['#db2777', '#4b5563', '#65a30d', '#0891b2'];
 const CATS = [
   { k: 'pass', name: '素通り', desc: '1分未満', color: '#93c5fd' },
   { k: 'stop', name: '立ち寄り', desc: '1〜15分', color: '#2563eb' },
-  { k: 'long', name: '長居', desc: '15〜90分', color: '#1e3a8a' },
-  { k: 'staff', name: 'スタッフ', desc: '90分以上', color: '#fbbf24' },
+  { k: 'long', name: '15分以上', desc: '15〜90分（実際より少なめ）', color: '#1e3a8a' },
+  { k: 'staff', name: '動かない機器', desc: '90分以上', color: '#fbbf24' },
   { k: 'car', name: '車', desc: 'A・B・D棟で1秒以下', color: '#d1d5db' },
 ];
 const WD = '日月火水木金土';
@@ -159,7 +159,7 @@ function renderKpis() {
   for (const k of nodes) for (const d of days) { pass += D.catDay[k].pass[d]; stay += D.catDay[k].stop[d] + D.catDay[k].long[d]; }
   let cov = 0; for (const k of nodes) for (const d of days) cov += DAY[k][d].cov;
   const cards = [
-    S.agg === 'sum' ? ['来た人（延べ・' + days.length + '日間）', fmt(v), areaLabel() + '・1日ごとの人数の合計（毎日来る人は日数分）'] : ['来た人（1日平均）', fmt(v / days.length), areaLabel() + '・車とスタッフを除く'],
+    S.agg === 'sum' ? ['来た人（延べ・' + days.length + '日間）', fmt(v), areaLabel() + '・1日ごとの人数の合計（毎日来る人は日数分）'] : ['来た人（1日平均）', fmt(v / days.length), areaLabel() + '・車と動かない機器を除く'],
     ['立ち寄り率', pct(stay, pass + stay) + '%', '選んだ拠点で1分以上いた人の割合'],
     ['寄り道回遊率', pct(rs, v) + '%', areaLabel() + 'の中で2か所以上・どこかで1分以上'],
     ['稼働率', nodes.length ? Math.round(cov / (nodes.length * days.length * 48) * 100) + '%' : '-', '30分枠のうちデータが届いた割合'],
@@ -255,7 +255,7 @@ function tabSeries(p) {
   head(p, '時間帯別ユニーク端末数（30分ごと）', c);
   p.appendChild(el('p', 'note', (S.smooth ? `前後${S.win}時間の平均でならした値（データのない枠は0として計算）。` : '30分ごとの実数。データのない枠は線が途切れる。') +
     { count: '', avg: '各拠点の期間平均を100とした比率（150＝普段の1.5倍）。', max: '各拠点の期間中の最大を100とした比率（混む時間の形を比べる用。どこが多いかは「台数」で見る）。' }[S.unit] +
-    ' 車・スタッフを含む機器の生の数。' + BAND_NOTE));
+    ' 車・動かない機器を含む端末の生の数。' + BAND_NOTE));
   const a = S.from * 48, b = (S.to + 1) * 48, n = b - a, series = [];
   for (const k of selNodes()) {
     let v = D.slot30[k].slice(a, b);
@@ -278,7 +278,7 @@ function tabSeries(p) {
 // ---------------------------------------------------------------- 滞在の内訳
 function tabStay(p) {
   const cats = CATS.filter(c => S.showOther || ['pass', 'stop', 'long'].includes(c.k));
-  head(p, '素通り・立ち寄り・長居', [btn('来た人だけ', !S.showOther, () => { S.showOther = false; render(); }), btn('車・スタッフも', S.showOther, () => { S.showOther = true; render(); })]);
+  head(p, '素通り・立ち寄り・15分以上', [btn('来た人だけ', !S.showOther, () => { S.showOther = false; render(); }), btn('車・動かない機器も', S.showOther, () => { S.showOther = true; render(); })]);
   const days = rangeDays(), nodes = selNodes(), hourly = days.length <= 3;
   p.appendChild(el('p', 'note', 'その日・その拠点で最初に見えてから最後に見えるまでの長さで分類。' + (hourly ? '3日以内なので1時間ごと（その時間にいた端末数）。' : '日ごと（その日に見えた端末数）。') + '選んだ拠点の合計（拠点をまたいだ人は拠点ごとに数える）。'));
   const box = el('div'); p.appendChild(box);
@@ -288,13 +288,13 @@ function tabStay(p) {
     stackBars(box, { cats: labels, stacks, yfmt: fmt, tipFn: i => { const d = S.from + Math.floor(i / 24); return `<b>${mdw(d)} ${i % 24}時</b><br>` + stacks.map(s => `<span style="color:${s.color}">■</span> ${s.name}: ${fmt(s.vals[i])}`).join('<br>'); } });
   } else {
     const stacks = cats.map(c => ({ name: c.name, color: c.color, vals: days.map(d => nodes.reduce((a, k) => a + D.catDay[k][c.k][d], 0)) }));
-    stackBars(box, { cats: days.map(md), stacks, yfmt: fmt, tipFn: i => { const d = days[i]; const tot = stacks.filter(s => ['素通り', '立ち寄り', '長居'].includes(s.name)).reduce((a, s) => a + s.vals[i], 0); const st = stacks.filter(s => ['立ち寄り', '長居'].includes(s.name)).reduce((a, s) => a + s.vals[i], 0); return `<b>${mdw(d)}${evName(d) ? ' ' + evName(d) : ''}</b><br>` + stacks.map(s => `<span style="color:${s.color}">■</span> ${s.name}: ${fmt(s.vals[i])}`).join('<br>') + `<br>立ち寄り率 ${pct(st, tot)}%`; } });
+    stackBars(box, { cats: days.map(md), stacks, yfmt: fmt, tipFn: i => { const d = days[i]; const tot = stacks.filter(s => ['素通り', '立ち寄り', '15分以上'].includes(s.name)).reduce((a, s) => a + s.vals[i], 0); const st = stacks.filter(s => ['立ち寄り', '15分以上'].includes(s.name)).reduce((a, s) => a + s.vals[i], 0); return `<b>${mdw(d)}${evName(d) ? ' ' + evName(d) : ''}</b><br>` + stacks.map(s => `<span style="color:${s.color}">■</span> ${s.name}: ${fmt(s.vals[i])}`).join('<br>') + `<br>立ち寄り率 ${pct(st, tot)}%`; } });
   }
   // 拠点ごとの内訳
   const sec = el('div', 'sec'); p.appendChild(sec);
   head(sec, '拠点ごとの内訳（期間の合計）');
-  sec.appendChild(el('p', 'note', '横棒は、来た人（素通り＋立ち寄り＋長居）を100%とした内訳。右は立ち寄り率（1分以上いた人の割合）。'));
-  let h = '<table class="list"><tr><th>拠点</th><th class="r">来た人</th><th style="width:40%">内訳</th><th class="r">立ち寄り率</th><th class="r">車</th><th class="r">スタッフ</th></tr>';
+  sec.appendChild(el('p', 'note', '横棒は、来た人（素通り＋立ち寄り＋15分以上）を100%とした内訳。右は立ち寄り率（1分以上いた人の割合）。'));
+  let h = '<table class="list"><tr><th>拠点</th><th class="r">来た人</th><th style="width:40%">内訳</th><th class="r">立ち寄り率</th><th class="r">車</th><th class="r">動かない機器</th></tr>';
   for (const k of nodes) {
     const t = {}; for (const c of CATS) t[c.k] = days.reduce((a, d) => a + D.catDay[k][c.k][d], 0);
     const tot = t.pass + t.stop + t.long;
@@ -325,7 +325,7 @@ function tabHeat(p) {
   }
   const val = acc.map((row, r) => row.map((v, h) => S.hmMetric === 'count' ? (cnt[r][h] ? v / cnt[r][h] : null) : (acc2[r][h] >= 20 ? v / acc2[r][h] * 100 : null)));
   const all = val.flat().filter(v => v != null), mx = Math.max(...all, 1), mn = S.hmMetric === 'stay' ? Math.min(...all) : 0;
-  p.appendChild(el('p', 'note', S.hmMetric === 'count' ? '1時間あたりの延べ端末数の平均（車・スタッフを含む）。色が濃いほど多い。祝日は「祝」の行にまとめた。' : 'その時間にいた人のうち、その拠点で1分以上いた人の割合。濃いほど「止まる」時間帯。人が少ない枠は空白。'));
+  p.appendChild(el('p', 'note', S.hmMetric === 'count' ? '1時間あたりの延べ端末数の平均（車・動かない機器を含む）。色が濃いほど多い。祝日は「祝」の行にまとめた。' : 'その時間にいた人のうち、その拠点で1分以上いた人の割合。濃いほど「止まる」時間帯。人が少ない枠は空白。'));
   let h = '<div class="scroll"><table class="grid"><tr><th></th>' + [...Array(24).keys()].map(x => `<th>${x}</th>`).join('') + '</tr>';
   ['月', '火', '水', '木', '金', '土', '日', '祝'].forEach((l, r) => {
     h += `<tr><th>${l}</th>` + val[r].map((v, hh) => v == null ? '<td style="background:#f3f4f6;min-width:34px"></td>' :
@@ -357,7 +357,7 @@ function monthlyTable(p) {
 }
 function tabDailyChart(p) {
   head(p, '日ごとの推移', [btn('折れ線', S.dayChart === 'line', () => { S.dayChart = 'line'; render(); }), btn('積み上げ', S.dayChart === 'stack', () => { S.dayChart = 'stack'; S.dayMode = 'people'; render(); }), lbl(' '), btn('10〜16時', S.dayMode === 'day', () => { S.dayMode = 'day'; render(); }), btn('一日中', S.dayMode === 'all', () => { S.dayMode = 'all'; render(); }), btn('夜0〜5時', S.dayMode === 'night', () => { S.dayMode = 'night'; render(); }), btn('来た人（分類後）', S.dayMode === 'people', () => { S.dayMode = 'people'; render(); })]);
-  p.appendChild(el('p', 'note', (S.dayMode === 'people' ? 'その日その拠点で見えた来た人（素通り＋立ち寄り＋長居。車・スタッフを除く）。' : S.dayMode === 'night' ? '夜0〜5時の30分あたりの平均端末数。置きっぱなしの機器や夜の人通りを見る用。' : '30分ごとのユニーク数を足したもの（同じ人が長くいると重ねて数える）。増減や段差を見る用。') + BAND_NOTE));
+  p.appendChild(el('p', 'note', (S.dayMode === 'people' ? 'その日その拠点で見えた来た人（素通り＋立ち寄り＋15分以上。車・動かない機器を除く）。' : S.dayMode === 'night' ? '夜0〜5時の30分あたりの平均端末数。置きっぱなしの機器や夜の人通りを見る用。' : '30分ごとのユニーク数を足したもの（同じ人が長くいると重ねて数える）。増減や段差を見る用。') + BAND_NOTE));
   const days = rangeDays(), n = days.length;
   const series = selNodes().map(k => ({ name: k, color: COLORS[k], vals: days.map(d => { const r = DAY[k][d]; if (S.dayMode === 'people') { const c = D.catDay[k]; const t = c.pass[d] + c.stop[d] + c.long[d]; return t || null; } return r.cov === 0 ? null : S.dayMode === 'night' ? r.night : r[S.dayMode]; }) }));
   const box = el('div'); p.appendChild(box);
@@ -380,7 +380,7 @@ function tabDailyChart(p) {
 // ---------------------------------------------------------------- 回遊
 function tabRoam(p) {
   head(p, '何時に来た人が回遊するか（到着時間別）', dtButtons());
-  p.appendChild(el('p', 'note', 'その日最初に見えた時間ごとに、2か所以上で見えた人の割合。<b>通り抜け</b>＝どこにも1分以上いなかった人、<b>寄り道回遊</b>＝どこかで1分以上いた人。車・スタッフは除く。上の「エリア」で商店街（A〜D棟）などを選ぶと、そのエリアの中だけで数え直す（今：<b>' + areaLabel() + '</b>）。'));
+  p.appendChild(el('p', 'note', 'その日最初に見えた時間ごとに、2か所以上で見えた人の割合。<b>通り抜け</b>＝どこにも1分以上いなかった人、<b>寄り道回遊</b>＝どこかで1分以上いた人。車・動かない機器は除く。上の「エリア」で商店街（A〜D棟）などを選ぶと、そのエリアの中だけで数え直す（今：<b>' + areaLabel() + '</b>）。'));
   const hr = [...Array(24)].map(() => [0, 0, 0, 0, 0, 0]);
   const RR = roamRows();
   for (const r of RR) if (r[0] >= S.from && r[0] <= S.to && inDt(r[0])) for (let j = 2; j < 7; j++) hr[r[1]][j - 2] += r[j];
@@ -397,7 +397,7 @@ function tabRoam(p) {
   // 日ごと
   let sec = el('div', 'sec'); p.appendChild(sec);
   head(sec, '日ごとの回遊率');
-  sec.appendChild(el('p', 'note', '車・スタッフを除いた来た人（' + areaLabel() + '）のうちの割合。' + BAND_NOTE));
+  sec.appendChild(el('p', 'note', '車・動かない機器を除いた来た人（' + areaLabel() + '）のうちの割合。' + BAND_NOTE));
   const days = rangeDays(), byDay = {};
   for (const r of RR) { if (!byDay[r[0]]) byDay[r[0]] = [0, 0, 0, 0, 0]; for (let j = 2; j < 7; j++) byDay[r[0]][j - 2] += r[j]; }
   const g = f => days.map(d => { const x = byDay[d]; return x && x[0] >= 500 ? f(x) : null; });
@@ -424,7 +424,7 @@ function tabRoam(p) {
   // 組み合わせ
   sec = el('div', 'sec'); p.appendChild(sec);
   head(sec, 'どの拠点同士が一緒に回られているか');
-  sec.appendChild(el('p', 'note', '同じ日に両方の拠点で見えた人数（期間の合計、車・スタッフ除く）。カッコ内は、どちらかで1分以上いた人。隣同士が多いのは自然なので、離れた拠点同士の数に注目。'));
+  sec.appendChild(el('p', 'note', '同じ日に両方の拠点で見えた人数（期間の合計、車・動かない機器除く）。カッコ内は、どちらかで1分以上いた人。隣同士が多いのは自然なので、離れた拠点同士の数に注目。'));
   const cv = {}, key = (a, b) => a < b ? a + '|' + b : b + '|' + a;
   for (const r of D.covisit) if (r[0] >= S.from && r[0] <= S.to && inDt(r[0])) { const kk = key(r[1], r[2]); if (!cv[kk]) cv[kk] = [0, 0]; cv[kk][0] += r[3]; cv[kk][1] += r[4]; }
   const nodes = selNodes(), mx = Math.max(1, ...Object.values(cv).map(x => x[0]));
@@ -444,7 +444,7 @@ function tabRoam(p) {
 // ---------------------------------------------------------------- ノード間移動
 function tabMoves(p) {
   head(p, 'ノード間移動', [...dtButtons(), lbl(' '), btn('1分未満を除く', S.skip1, () => { S.skip1 = !S.skip1; render(); })]);
-  p.appendChild(el('p', 'note', '同じ端末が60分以内に別の拠点で見えたら「移動」（車・スタッフ除く）。<b>1分未満の移動</b>は、隣り合う拠点が同じ人を同時に拾っただけのことが多いので、初期状態では除いている。行＝出発、列＝到着。'));
+  p.appendChild(el('p', 'note', '同じ端末が60分以内に別の拠点で見えたら「移動」（車・動かない機器除く）。<b>1分未満の移動</b>は、隣り合う拠点が同じ人を同時に拾っただけのことが多いので、初期状態では除いている。行＝出発、列＝到着。'));
   const nodes = selNodes(), M = {};
   for (const r of D.moves) {
     if (r[0] < S.from || r[0] > S.to || !inDt(r[0])) continue;
@@ -593,7 +593,7 @@ function tabReport(p) {
   // 拠点の表
   let t = '<div class="rep-sec"><b>拠点ごと</b><table class="list"><tr><th>拠点</th><th class="r">来た人</th><th class="r">' + cmpWord + 'の平均</th><th class="r">差</th><th class="r">立ち寄り率</th><th class="r">データ</th></tr>';
   for (const x of rows) t += `<tr><td><span class="dot" style="background:${COLORS[x.k]}"></span>${x.k}</td><td class="r">${fmt(x.v)}</td><td class="r">${x.b == null ? '-' : fmt(x.b)}</td><td class="r ${x.r == null ? '' : x.r >= 0 ? 'up' : 'down'}">${x.r == null ? '-' : sgn(x.r)}</td><td class="r">${pct(stay(x.k, d), x.v)}%</td><td class="r">${x.cov < 38 ? '⚠️ ' : ''}${Math.round(x.cov / 48 * 100)}%</td></tr>`;
-  html.push(t + '</table><p class="note">拠点ごとの「来た人」は素通り＋立ち寄り＋長居（車・スタッフを除く）。拠点をまたぐ重複は除いていないので、合計は上の来た人より多くなります。全体で比べた日：' + (base.length ? base.map(mdw).join('、') : 'なし') + '（拠点ごとの平均は、その拠点のデータがそろった日で計算）</p></div>');
+  html.push(t + '</table><p class="note">拠点ごとの「来た人」は素通り＋立ち寄り＋15分以上（車・動かない機器を除く）。拠点をまたぐ重複は除いていないので、合計は上の来た人より多くなります。全体で比べた日：' + (base.length ? base.map(mdw).join('、') : 'なし') + '（拠点ごとの平均は、その拠点のデータがそろった日で計算）</p></div>');
 
   // 朝の予報
   const pr = (C.pred || {})[d];
