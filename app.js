@@ -16,7 +16,9 @@ const CATS = [
 const WD = '日月火水木金土';
 const TABS = ['日別トレンド', '日報', '時系列', '滞在の内訳', 'ヒートマップ', '回遊', 'ノード間移動', '機器チェック', '拠点マップ', '地図'];
 
-let D, NDAY, HOL, EV, NODES, DAY, BASE, AREAS;
+let D, NDAY, HOL, EV, NODES, DAY, BASE, AREAS, REF, MAIN, ROT;
+// 推定台数＝識別子の数 − 滞在時間の合計（分）÷ R。R＝識別子が変わる平均の間隔（分）
+const estN = (ids, durSec, r) => ids - durSec / 60 / r;
 const S = { from: 0, to: 0, sel: new Set(), tab: 0, smooth: true, win: 3, unit: 'max', hmNode: 'all', hmMetric: 'count', dayMode: 'people', dt: 'all', showOther: false, skip1: true, dayChart: 'line', rep: null, bm: 'vis', flow: true, mapView: null, agg: 'avg' };
 const $ = id => document.getElementById(id);
 const tip = $('tip');
@@ -55,9 +57,12 @@ async function boot() {
   const ORDER = ['大手ビル', 'A棟', 'B棟', 'C棟', 'D棟', 'ひとなる図書館'];
   const rank = k => { const i = ORDER.findIndex(o => k.startsWith(o)); return i < 0 ? 99 : i; };
   NODES = D.nodes.slice().sort((a, b) => rank(a) - rank(b) || a.localeCompare(b, 'ja'));
-  AREAS = {}; Object.entries(D.areas || {}).forEach(([a, ks]) => { const k2 = ks.filter(k => NODES.includes(k)); if (k2.length) AREAS[a] = k2; });
+  REF = new Set(D.ref || ['大手ビル西']);   // 参考の拠点：全体の合計に入れない
+  MAIN = NODES.filter(k => !REF.has(k));
+  ROT = D.rot || { est: 13, lo: 11, hi: 15 };
+  AREAS = {}; Object.entries(D.areas || {}).forEach(([a, ks]) => { const k2 = ks.filter(k => NODES.includes(k) && !REF.has(k)); if (k2.length) AREAS[a] = k2; });
   NODES.forEach((k, i) => { if (!COLORS[k]) COLORS[k] = EXTRA[i % EXTRA.length]; });
-  NODES.forEach(k => S.sel.add(k));
+  MAIN.forEach(k => S.sel.add(k));
   for (const k of NODES) while (D.slot30[k].length < NDAY * 48) D.slot30[k].push(null);
   prepDay();
   const m = location.hash.match(/^#tab(\d)$/); if (m && +m[1] < TABS.length) S.tab = +m[1];
@@ -117,7 +122,8 @@ function curArea() {
   for (const [a, ks] of Object.entries(AREAS)) if (ks.length === S.sel.size && ks.every(k => S.sel.has(k))) return a;
   return 'all';
 }
-function areaLabel() { const a = curArea(); return a === 'all' ? (S.sel.size === NODES.length ? '全拠点' : '全拠点（拠点を個別に選んだときも全体で計算）') : a; }
+const isMainSel = () => S.sel.size === MAIN.length && MAIN.every(k => S.sel.has(k));
+function areaLabel() { const a = curArea(); return a === 'all' ? (isMainSel() ? '全拠点' + (REF.size ? '（' + [...REF].join('・') + 'は参考のため除く）' : '') : '全拠点（拠点を個別に選んだときも全体で計算）') : a; }
 // 回遊の行（[日, 到着時, 来た人, 2か所以上, 3か所以上, 通り抜け, 寄り道回遊]）。エリアを選んでいればエリア内で数えたもの
 function roamRows() {
   const a = curArea();
@@ -141,11 +147,11 @@ function renderControls() {
   $('from').value = dayStr(S.from); $('to').value = dayStr(S.to);
   const ar = $('areas'); ar.innerHTML = '';
   const ca = curArea();
-  ar.appendChild(btn('すべて', S.sel.size === NODES.length, () => { S.sel = new Set(NODES); render(); }));
+  ar.appendChild(btn('すべて', isMainSel(), () => { S.sel = new Set(MAIN); render(); }));
   for (const [a, ks] of Object.entries(AREAS)) ar.appendChild(btn(a + '（' + ks.join('・').replace(/棟・/g, '・') + '）', ca === a, () => { S.sel = new Set(ks); render(); }));
   const c = $('chips'); c.innerHTML = '';
   for (const k of NODES) {
-    const b = el('button', 'chip' + (S.sel.has(k) ? '' : ' off'), k); b.style.background = COLORS[k];
+    const b = el('button', 'chip' + (S.sel.has(k) ? '' : ' off'), k + (REF.has(k) ? '（参考）' : '')); b.style.background = COLORS[k];
     b.onclick = () => { S.sel.has(k) ? S.sel.delete(k) : S.sel.add(k); render(); };
     c.appendChild(b);
   }
@@ -155,13 +161,19 @@ function renderControls() {
 
 function renderKpis() {
   const days = rangeDays(), nodes = selNodes();
-  let v = 0, rs = 0;
-  for (const r of roamRows()) if (r[0] >= S.from && r[0] <= S.to) { v += r[2]; rs += r[6]; }
+  let v = 0, rs = 0, dur = 0, hasDur = true;
+  for (const r of roamRows()) if (r[0] >= S.from && r[0] <= S.to) { v += r[2]; rs += r[6]; if (r[7] == null) hasDur = false; else dur += r[7]; }
   let pass = 0, stay = 0;
   for (const k of nodes) for (const d of days) { pass += D.catDay[k].pass[d]; stay += D.catDay[k].slow[d] + D.catDay[k].stay[d]; }
   let cov = 0; for (const k of nodes) for (const d of days) cov += DAY[k][d].cov;
+  const n = S.agg === 'sum' ? 1 : days.length, est = estN(v, dur, ROT.est);
+  const visCard = !hasDur
+    ? (S.agg === 'sum' ? ['来た人（延べ・' + days.length + '日間）', fmt(v), areaLabel() + '・1日ごとの人数の合計（毎日来る人は日数分）'] : ['来た人（1日平均）', fmt(v / days.length), areaLabel() + '・車と機器を除く'])
+    : [(S.agg === 'sum' ? '来た人（推定・延べ' + days.length + '日間）' : '来た人（推定・1日平均）'), fmt(est / n),
+       '幅 ' + fmt(estN(v, dur, ROT.lo) / n) + '〜' + fmt(estN(v, dur, ROT.hi) / n) + '・識別子の数 ' + fmt(v / n) + '・' + areaLabel()];
   const cards = [
-    S.agg === 'sum' ? ['来た人（延べ・' + days.length + '日間）', fmt(v), areaLabel() + '・1日ごとの人数の合計（毎日来る人は日数分）'] : ['来た人（1日平均）', fmt(v / days.length), areaLabel() + '・車と機器を除く'],
+    visCard,
+    ...(hasDur && est > 0 ? [['平均滞在（推定）', (dur / 60 / est).toFixed(1) + '分', '1台あたり・識別子が約' + ROT.est + '分で変わる分を補正']] : []),
     ['立ち寄り率', pct(stay, pass + stay) + '%', '選んだ拠点で1分以上いた人の割合'],
     ['寄り道回遊率', pct(rs, v) + '%', areaLabel() + 'の中で2か所以上・どこかで1分以上'],
     ['稼働率', nodes.length ? Math.round(cov / (nodes.length * days.length * 48) * 100) + '%' : '-', '30分枠のうちデータが届いた割合'],
@@ -295,13 +307,16 @@ function tabStay(p) {
   // 拠点ごとの内訳
   const sec = el('div', 'sec'); p.appendChild(sec);
   head(sec, '拠点ごとの内訳（期間の合計）');
-  sec.appendChild(el('p', 'note', '横棒は、来た人（素通り＋ゆっくり＋滞在）を100%とした内訳。右は立ち寄り率（1分以上いた人の割合）。'));
-  let h = '<table class="list"><tr><th>拠点</th><th class="r">来た人</th><th style="width:40%">内訳</th><th class="r">立ち寄り率</th><th class="r">車</th><th class="r">機器</th></tr>';
+  const hasND = !!D.nodeDur;
+  sec.appendChild(el('p', 'note', '横棒は、来た人（素通り＋ゆっくり＋滞在。識別子の数）を100%とした内訳。右は立ち寄り率（1分以上いた人の割合）。' + (hasND ? '推定台数と平均滞在は、識別子が約' + ROT.est + '分で変わって同じ人を数え直す分を補正したもの（幅は' + ROT.lo + '〜' + ROT.hi + '分で計算）。' : '')));
+  let h = '<table class="list"><tr><th>拠点</th><th class="r">来た人（識別子）</th>' + (hasND ? '<th class="r">推定台数</th><th class="r">平均滞在</th>' : '') + '<th style="width:34%">内訳</th><th class="r">立ち寄り率</th><th class="r">車</th><th class="r">機器</th></tr>';
   for (const k of nodes) {
     const t = {}; for (const c of CATS) t[c.k] = days.reduce((a, d) => a + D.catDay[k][c.k][d], 0);
     const tot = t.pass + t.slow + t.stay;
     const seg = ['pass', 'slow', 'stay'].map(c => `<div style="width:${tot ? t[c] / tot * 100 : 0}%;background:${CATS.find(x => x.k === c).color}" title="${CATS.find(x => x.k === c).name} ${pct(t[c], tot)}%"></div>`).join('');
-    h += `<tr><td><span style="color:${COLORS[k]}">●</span> ${k}</td><td class="r">${fmt(tot)}</td><td><div class="bar">${seg}</div></td><td class="r"><b>${pct(t.slow + t.stay, tot)}%</b></td><td class="r">${fmt(t.car)}</td><td class="r">${fmt(t.device)}</td></tr>`;
+    const nd = hasND ? days.reduce((a, d) => a + (D.nodeDur[k][d] || 0), 0) : 0, ne = estN(tot, nd, ROT.est);
+    const estTd = hasND ? `<td class="r" title="幅 ${fmt(estN(tot, nd, ROT.lo))}〜${fmt(estN(tot, nd, ROT.hi))}">${fmt(ne)}</td><td class="r">${ne > 0 ? (nd / 60 / ne).toFixed(1) + '分' : '-'}</td>` : '';
+    h += `<tr><td><span style="color:${COLORS[k]}">●</span> ${k}${REF.has(k) ? '（参考）' : ''}</td><td class="r">${fmt(tot)}</td>${estTd}<td><div class="bar">${seg}</div></td><td class="r"><b>${pct(t.slow + t.stay, tot)}%</b></td><td class="r">${fmt(t.car)}</td><td class="r">${fmt(t.device)}</td></tr>`;
   }
   sec.insertAdjacentHTML('beforeend', h + '</table>');
 }
@@ -345,16 +360,20 @@ function monthlyTable(p) {
   const yms = Object.keys(MO).sort(), cur = D.generated.slice(0, 7);
   const sec = el('div', 'sec'); p.appendChild(sec);
   head(sec, '月別　' + (sum ? '延べ人数' : '1日平均') + '（' + areaLabel().replace(/（.*）/, '') + '）', [btn('1日平均', !sum, () => { S.agg = 'avg'; render(); }), btn('延べ', sum, () => { S.agg = 'sum'; render(); })]);
-  sec.appendChild(el('p', 'note', '9月1日からの全期間（上の期間の選択には連動しません）。延べ＝その日に来た人（重複を除く）を日数分足した数で、毎日来る人は日数分数えます。データが欠けた時間の分は補っていないので、そのぶん少なめです。立ち寄り率とデータの届いた割合は、選んだ拠点で計算。'));
-  let h = '<div class="scroll"><table class="list"><tr><th>月</th><th class="r">日数</th><th class="r">来た人' + (sum ? '（延べ）' : '（1日平均）') + '</th><th class="r">立ち寄り率</th><th class="r">データの届いた割合</th></tr>';
-  let tv = 0, td = 0, tt = 0, ts = 0, tc = 0;
+  sec.appendChild(el('p', 'note', '9月1日からの全期間（上の期間の選択には連動しません）。延べ＝その日に来た人（重複を除く）を日数分足した数で、毎日来る人は日数分数えます。データが欠けた時間の分は補っていないので、そのぶん少なめです。立ち寄り率とデータの届いた割合は、選んだ拠点で計算。' + (D.monthly && Object.values(D.monthly).some(m => m.dur) ? '推定＝識別子の数から、識別子が約' + ROT.est + '分で変わって同じ人を数え直した分を引いた数。' : '')));
+  const hasMD = yms.some(ym => (MO[ym].dur || 0) > 0);
+  let h = '<div class="scroll"><table class="list"><tr><th>月</th><th class="r">日数</th>' + (hasMD ? '<th class="r">来た人（推定' + (sum ? '・延べ' : '・1日平均') + '）</th><th class="r">識別子の数</th>' : '<th class="r">来た人' + (sum ? '（延べ）' : '（1日平均）') + '</th>') + '<th class="r">立ち寄り率</th><th class="r">データの届いた割合</th></tr>';
+  let tv = 0, td = 0, tt = 0, ts = 0, tc = 0, tdur = 0;
   for (const ym of yms) {
-    const m = MO[ym], v = a === 'all' ? m.vis : (m.area[a] || 0);
+    const m = MO[ym], v = a === 'all' ? m.vis : (m.area[a] || 0), du = a === 'all' ? (m.dur || 0) : ((m.areaDur || {})[a] || 0);
+    tdur += du;
+    const estCell = (vv, dd, nd) => hasMD ? `<td class="r"><b>${dd > 0 ? fmt((sum ? estN(vv, dd, ROT.est) : estN(vv, dd, ROT.est) / nd)) : '-'}</b></td><td class="r">${fmt(sum ? vv : vv / nd)}</td>` : `<td class="r"><b>${fmt(sum ? vv : vv / nd)}</b></td>`;
     let t = 0, st = 0, cv = 0; for (const k of nodes) { const n = m.node[k]; if (n) { t += n[0]; st += n[1]; cv += n[2]; } }
     tv += v; td += m.days; tt += t; ts += st; tc += cv;
-    h += `<tr><td>${+ym.slice(0, 4)}年${+ym.slice(5)}月${ym === cur ? '（途中）' : ''}</td><td class="r">${m.days}</td><td class="r"><b>${fmt(sum ? v : v / m.days)}</b></td><td class="r">${pct(st, t)}%</td><td class="r">${nodes.length ? Math.round(cv / (nodes.length * m.days * 48) * 100) : '-'}%</td></tr>`;
+    h += `<tr><td>${+ym.slice(0, 4)}年${+ym.slice(5)}月${ym === cur ? '（途中）' : ''}</td><td class="r">${m.days}</td>${estCell(v, du, m.days)}<td class="r">${pct(st, t)}%</td><td class="r">${nodes.length ? Math.round(cv / (nodes.length * m.days * 48) * 100) : '-'}%</td></tr>`;
   }
-  h += `<tr class="total"><td>9月からの累計</td><td class="r">${td}</td><td class="r"><b>${fmt(sum ? tv : tv / td)}</b></td><td class="r">${pct(ts, tt)}%</td><td class="r">${nodes.length ? Math.round(tc / (nodes.length * td * 48) * 100) : '-'}%</td></tr>`;
+  const estTot = hasMD ? `<td class="r"><b>${fmt(sum ? estN(tv, tdur, ROT.est) : estN(tv, tdur, ROT.est) / td)}</b></td><td class="r">${fmt(sum ? tv : tv / td)}</td>` : `<td class="r"><b>${fmt(sum ? tv : tv / td)}</b></td>`;
+  h += `<tr class="total"><td>9月からの累計</td><td class="r">${td}</td>${estTot}<td class="r">${pct(ts, tt)}%</td><td class="r">${nodes.length ? Math.round(tc / (nodes.length * td * 48) * 100) : '-'}%</td></tr>`;
   sec.insertAdjacentHTML('beforeend', h + '</table></div>');
 }
 function tabDailyChart(p) {
