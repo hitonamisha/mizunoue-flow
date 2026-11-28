@@ -61,3 +61,7 @@ footer{color:#9ca3af;font-size:12px;text-align:center;padding:10px 0 30px}
 .bm-label b{font-size:13px}
 .bm-tiles{filter:grayscale(1) contrast(.85) brightness(1.08)}
 table.list tr.total td{border-top:2px solid #d1d5db;font-weight:600;background:#f9fafb}
+.faq-g{max-width:820px;margin-top:14px}.faq-g h3{font-size:14px;margin:0 0 4px;color:#374151}
+.faq{border-top:1px solid #f1f3f5}.faq summary{cursor:pointer;padding:9px 2px;font-weight:600;font-size:13px}
+.faq-a{padding:0 2px 10px 18px;line-height:1.7;font-size:13px}.faq-a p{margin:4px 0}.faq-a ul{margin:4px 0;padding-left:18px}
+table.faqt{max-width:640px}
